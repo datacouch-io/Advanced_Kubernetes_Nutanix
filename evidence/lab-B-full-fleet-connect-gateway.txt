@@ -1,0 +1,55 @@
+=== Full fleet, all three clouds, final state ===
+
+$ gcloud container fleet memberships list
+NAME        UNIQUE_ID                             LOCATION
+advk8s-aks  0a95fc08-8428-4255-b279-12a26b0a7605  global
+advk8s-eks  f61501f3-f590-4f69-ac27-45c5ff7992cb  global
+advk8s-gke  40a4cce6-a8fe-418e-aaa2-e34335d597d3  us-central1
+
+=== GKE cluster required an explicit fleet registration (did not auto-enroll) ===
+
+$ gcloud container fleet memberships get-credentials advk8s-gke   (before registering)
+ERROR: Membership advk8s-gke not found in the fleet.
+
+$ gcloud container fleet memberships register advk8s-gke --gke-cluster=us-central1-a/advk8s-gke --enable-workload-identity
+FAILED_PRECONDITION: Workload Identity is not enabled on your GKE cluster
+(cluster was created without --workload-pool; enabling it after the fact requires a cluster update)
+
+$ gcloud container fleet memberships register advk8s-gke --gke-cluster=us-central1-a/advk8s-gke   (flag dropped)
+Waiting for membership to be created....
+Finished registering to the Fleet.
+
+=== EKS re-registration after recreating at a supported Kubernetes version (1.33) ===
+
+$ ISSUER_URL=$(aws eks describe-cluster --region us-west-2 --name advk8s-eks --query cluster.identity.oidc.issuer --output text)
+https://oidc.eks.us-west-2.amazonaws.com/id/7018AF9E762C076AA98A98612DD50B08
+
+$ gcloud container attached clusters register advk8s-eks --location=us-central1 \
+    --fleet-project=689187653331 --platform-version=1.33.0-gke.3 --distribution=eks \
+    --issuer-url="$ISSUER_URL" --context=advk8s-eks --kubeconfig=~/.kube/config
+Creating in-cluster install agent
+Created cluster [advk8s-eks]...
+NAME        PLATFORM_VERSION  KUBERNETES_VERSION  STATE
+advk8s-eks  1.33.0-gke.3      1.33                RUNNING
+
+=== Connect Gateway to EKS: zero AWS credentials on the client ===
+
+$ gcloud container fleet memberships generate-gateway-rbac --membership=advk8s-eks \
+    --users=training@datacouch.io --role=clusterrole/cluster-admin \
+    --context=advk8s-eks --kubeconfig=~/.kube/config --apply
+Applying the generate RBAC policy to cluster...
+
+$ gcloud container fleet memberships get-credentials advk8s-eks
+$ kubectl get nodes
+NAME                                           STATUS   ROLES    AGE     VERSION
+ip-192-168-32-9.us-west-2.compute.internal     Ready    <none>   2m51s   v1.33.13-eks-cb19647
+ip-192-168-75-184.us-west-2.compute.internal   Ready    <none>   2m47s   v1.33.13-eks-cb19647
+
+=== Connect Gateway to native GKE member: no explicit RBAC grant needed (IAM handles it) ===
+
+$ gcloud container fleet memberships get-credentials advk8s-gke
+$ kubectl get nodes   (worked immediately -- no generate-gateway-rbac step required for the native GKE member,
+                       unlike the two attached clusters -- IAM project roles already cover it)
+NAME                                        STATUS   ROLES    AGE   VERSION
+gke-advk8s-gke-default-pool-346fc04a-sm4c   Ready    <none>   38m   v1.35.7-gke.1027000
+gke-advk8s-gke-default-pool-346fc04a-xwnj   Ready    <none>   38m   v1.35.7-gke.1027000

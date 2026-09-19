@@ -1,0 +1,19 @@
+=== Single loop, one GCP identity, three clouds -- no aws/az CLI touched ===
+
+for m in advk8s-gke advk8s-eks advk8s-aks; do
+  gcloud container fleet memberships get-credentials "$m" --project=$PROJECT_ID >/dev/null 2>&1
+  kubectl get nodes
+done
+
+=== advk8s-gke ===
+NAME                                        STATUS   ROLES    AGE   VERSION
+gke-advk8s-gke-default-pool-346fc04a-sm4c   Ready    <none>   39m   v1.35.7-gke.1027000
+gke-advk8s-gke-default-pool-346fc04a-xwnj   Ready    <none>   39m   v1.35.7-gke.1027000
+=== advk8s-eks ===
+NAME                                           STATUS   ROLES    AGE     VERSION
+ip-192-168-32-9.us-west-2.compute.internal     Ready    <none>   5m35s   v1.33.13-eks-cb19647
+ip-192-168-75-184.us-west-2.compute.internal   Ready    <none>   5m31s   v1.33.13-eks-cb19647
+=== advk8s-aks ===
+NAME                                STATUS   ROLES    AGE   VERSION
+aks-nodepool1-98415359-vmss000000   Ready    <none>   42m   v1.35.7
+aks-nodepool1-98415359-vmss000001   Ready    <none>   42m   v1.35.7

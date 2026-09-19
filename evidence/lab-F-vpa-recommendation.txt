@@ -1,0 +1,15 @@
+=== VPA recommendation, live tested (updateMode: Off, recommendation-only) ===
+
+Deployment vpa-demo: 2 replicas, container 'stress' requests cpu=100m/mem=50Mi, limits cpu=200m/mem=100Mi
+actually running: stress --cpu 1 (permanently CPU-bound, using far more than requested/allowed)
+
+$ kubectl describe vpa vpa-demo   (after ~8 minutes of metrics history)
+Recommendation:
+  Container Name:  stress
+  Lower Bound:   cpu=170m  memory=250Mi
+  Target:        cpu=247m  memory=250Mi
+  Upper Bound:   cpu=50460m  memory=2349382352 (~2.2Gi)
+
+VPA correctly identified the container is memory-underprovisioned by 5x (50Mi requested vs
+250Mi actually needed) and recommends raising CPU request from 100m towards 247m -- accurately
+reflecting real, measured usage rather than the arbitrary values we set at deploy time.

@@ -1,0 +1,35 @@
+=== Binary Authorization: full deny -> attest -> allow cycle, live tested on real GKE ===
+
+Setup: attestor 'advk8s-attestor' backed by a Cloud KMS EC_SIGN_P256_SHA256 key,
+cluster policy: defaultAdmissionRule.evaluationMode=REQUIRE_ATTESTATION requiring this attestor,
+cluster binaryAuthorization.evaluationMode=PROJECT_SINGLETON_POLICY_ENFORCE.
+
+=== Attempt 1: deploy by mutable TAG (not digest) ===
+\$ kubectl run unattested-test --image=nginx:1.27-alpine
+Error from server (VIOLATES_POLICY): ... "Expected digest with sha256 scheme, but got tag or malformed digest"
+(Binary Authorization refuses tag references outright -- attestations bind to an immutable digest,
+ never to a mutable tag, so tags are rejected before it even checks for an attestation.)
+
+=== Attempt 2: deploy by digest, no attestation yet ===
+\$ kubectl run binauthz-test --image=us-central1-docker.pkg.dev/.../nginx@sha256:6068ed9a...
+Error from server (VIOLATES_POLICY): ... denied by attestor projects/dcproject-462806/attestors/advk8s-attestor:
+"No attestations found that were valid and signed by a key trusted by the attestor"
+
+=== Sign the image ===
+\$ gcloud beta container binauthz attestations sign-and-create --artifact-url=<digest> \
+    --attestor=advk8s-attestor --keyversion-project=... --keyversion-keyring=advk8s-binauthz-keyring \
+    --keyversion-key=advk8s-attestor-key --keyversion=1
+
+=== Attempt 3: same digest, now attested ===
+\$ kubectl run binauthz-test --image=us-central1-docker.pkg.dev/.../nginx@sha256:6068ed9a...
+pod/binauthz-test created
+NAME            READY   STATUS    RESTARTS   AGE
+binauthz-test   1/1     Running   0          9s
+
+Side note (unrelated to Binary Authorization, kept for anyone hitting the same thing):
+the first image we pushed from an Apple Silicon Mac to Artifact Registry was pushed as arm64
+by default and crashed on the GKE amd64 nodes with 'exec format error'. Fixed by resolving the
+amd64-specific manifest digest from the upstream multi-arch image via
+'docker buildx imagetools inspect' and copying THAT digest with 'docker buildx imagetools create'
+-- 'docker pull --platform linux/amd64' silently kept serving the locally cached arm64 layer
+even after removing the tag, so don't trust --platform alone once an image has been pulled once.

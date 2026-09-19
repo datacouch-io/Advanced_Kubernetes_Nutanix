@@ -1,0 +1,68 @@
+Lab 3 — etcd Quota Alarm & Recovery — captured evidence
+Dedicated cluster: kind "etcd-lab", Kubernetes v1.37.0, etcd v3.7.0.  Real run 2026-09-19.
+Helper: e() = kubectl -n kube-system exec etcd-etcd-lab-control-plane -- etcdctl <TLS flags> "$@"
+
+=== 3.2  Lower the quota to 16 MiB ===
+$ docker exec etcd-lab-control-plane sed -i '/^    - etcd$/a\    - --quota-backend-bytes=16777216' /etc/kubernetes/manifests/etcd.yaml
+$ e endpoint status -w fields | grep -E 'DBSize|Quota'
+"DBSize" : 495616
+"DBSizeInUse" : 487424
+"DBSizeQuota" : 16777216           # 16 MiB
+
+=== 3.3  Fill etcd until a write is refused ===
+$ for i in 1..40: kubectl -n fill create configmap fill-$i --from-file=blob=/tmp/blob.txt   (~900 KB each)
+  created 4 ConfigMaps...
+  created 8 ConfigMaps...
+  created 12 ConfigMaps...
+FAILED at ConfigMap #14:
+  error: failed to create configmap: etcdserver: mvcc: database space exceeded
+# (exact count varies by a ConfigMap or two run-to-run)
+
+=== 3.4  Cluster is read-only ===
+$ e alarm list
+memberID:8006870075869628520  alarm:NOSPACE
+
+$ kubectl create configmap canary --from-literal=a=b       # unrelated namespace
+error: failed to create configmap: etcdserver: mvcc: database space exceeded
+
+$ kubectl get ns                                           # reads still fine
+kube-system          Active   19m
+local-path-storage   Active   19m
+
+$ e endpoint status -w fields | grep -E 'DBSize|Quota'
+"DBSize" : 17178624          # ~17.2 MB -- has met the quota
+"DBSizeInUse" : 12656640
+"DBSizeQuota" : 16777216
+
+=== 3.5  Recover: compact -> defrag -> disarm ===
+$ REV=$(e endpoint status -w fields | grep '"Revision"' | head -1 | grep -oE '[0-9]+')   # 1998
+$ e compact 1998
+compacted revision 1998
+$ e defrag --command-timeout=30s
+Finished defragmenting etcd member[https://127.0.0.1:2379]. took 211.844583ms
+$ e alarm disarm
+memberID:8006870075869628520  alarm:NOSPACE       # prints the alarm it cleared
+$ e alarm list
+(empty -- cleared)
+$ kubectl create configmap canary --from-literal=a=b
+configmap/canary created                          # WRITES WORK AGAIN
+$ e endpoint status -w fields | grep -E 'DBSize'
+"DBSize" : 14020608          # dropped ~17 MB -> ~14 MB after defrag
+"DBSizeInUse" : 14020608
+
+GOTCHA: disarm latches -- defrag alone won't restore writes; you MUST alarm disarm.
+And order matters: compact + defrag FIRST (make real space), THEN disarm, else it re-arms immediately.
+
+=== 3.6  Reclaim the space the live junk holds ===
+$ kubectl delete namespace fill; kubectl delete configmap canary
+namespace "fill" deleted
+configmap "canary" deleted from default namespace
+$ e compact <rev 2031>; e defrag
+compacted revision 2031
+Finished defragmenting etcd member[https://127.0.0.1:2379]. took 10.567ms
+$ e endpoint status -w fields | grep -E 'DBSize'
+"DBSize" : 495616            # ~0.5 MB -- back to baseline
+"DBSizeInUse" : 487424
+
+=== 3.7  Cleanup ===
+$ kind delete cluster --name etcd-lab

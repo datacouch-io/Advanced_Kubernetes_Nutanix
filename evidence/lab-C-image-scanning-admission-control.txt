@@ -1,0 +1,39 @@
+=== Trivy: vulnerability scan comparison ===
+
+$ trivy image --severity HIGH,CRITICAL nginx:1.16
+Total: 166 (HIGH: 127, CRITICAL: 39)
+
+$ trivy image --severity HIGH,CRITICAL nginx:1.27-alpine
+nginx:1.27-alpine (alpine 3.21.3): 35 vulnerabilities
+
+=== Kyverno ValidatingPolicy (CEL-based, policies.kyverno.io/v1 -- current API as of Kyverno 1.19;
+    legacy kyverno.io/v1 ClusterPolicy is deprecated in 1.19 and removed in 1.20) ===
+
+Policy: disallow-latest-tag
+$ kubectl run bad-pod --image=nginx:latest
+Error from server: admission webhook "vpol.validate.kyverno.svc-fail" denied the request:
+Policy disallow-latest-tag failed: Container images must specify an explicit tag, not :latest or no tag at all.
+
+$ kubectl run good-pod --image=nginx:1.27-alpine
+pod/good-pod created
+
+Policy: require-nonroot-and-limits
+$ kubectl apply -f bad-pod-2.yaml   (no securityContext, no resource limits)
+Error from server: ... Policy require-nonroot-and-limits failed: Every container must set securityContext.runAsNonRoot: true.
+
+$ kubectl apply -f good-pod-2.yaml  (runAsNonRoot: true, runAsUser: 101, resource limits set -- stock nginx:1.27-alpine image)
+pod/good-pod-2 created   <- ADMITTED, but then:
+STATUS: Error, CrashLoopBackOff
+kubectl logs: nginx: [emerg] mkdir() "/var/cache/nginx/client_temp" failed (13: Permission denied)
+(passing the admission policy is necessary but not sufficient -- the stock nginx image writes to root-owned
+ paths at startup regardless of the runAsNonRoot flag; you also need an image built to run unprivileged)
+
+$ kubectl apply -f good-pod-3.yaml  (same policy-compliant securityContext, image swapped to nginxinc/nginx-unprivileged:1.27-alpine)
+pod/good-pod-3 created
+NAME         READY   STATUS    RESTARTS   AGE
+good-pod-3   1/1     Running   0          10s
+
+Policy: disallow-privileged
+$ kubectl apply -f privileged-pod.yaml  (securityContext.privileged: true, also missing runAsNonRoot)
+Error from server: ... Policy require-nonroot-and-limits failed: ...; Policy disallow-privileged failed: Privileged containers are not allowed.
+(both policies evaluate independently and both report -- Kyverno aggregates every failing policy into one response)

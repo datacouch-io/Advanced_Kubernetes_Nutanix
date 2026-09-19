@@ -1,0 +1,22 @@
+=== Advanced HPA: custom scaleUp/scaleDown behavior, live tested ===
+
+HPA config: minReplicas=1 maxReplicas=6 target cpu=50%
+  scaleUp:   stabilizationWindowSeconds=0, policies=[Percent 100/15s, Pods 2/15s] selectPolicy=Max  (scale up fast)
+  scaleDown: stabilizationWindowSeconds=60, policies=[Percent 50/30s] selectPolicy=Min                (scale down cautiously)
+
+=== Scale-up under load (busybox hammering the service in a tight wget loop) ===
+t+20s : cpu 121%/50%  replicas=1  (load just started, HPA hasn't reacted yet)
+t+40s : cpu 153%/50%  replicas=3  (scaled 1->3 -- the aggressive scaleUp policy)
+t+60s : cpu 85%/50%   replicas=6  (scaled to max within ~90s of load starting)
+t+80s : cpu 59%/50%   replicas=6
+
+=== Scale-down after load removed (kubectl delete pod load-generator) ===
+t+0s  : cpu 61%/50%  replicas=6  (residual load draining)
+t+20s : cpu 0%/50%   replicas=6  (inside the 60s stabilization window -- no scale-down yet despite 0% cpu)
+t+40s : cpu 0%/50%   replicas=6  (still inside stabilization window)
+t+60s : cpu 0%/50%   replicas=6  (still 6 -- window just expiring)
+t+80s : cpu 0%/50%   replicas=3  (window expired, 50%-per-30s policy: 6->3, not straight to 1)
+t+100s: cpu 0%/50%   replicas=1  (second 50% step: 3->1)
+
+Confirms both halves of the behavior spec worked exactly as configured: fast, aggressive scale-up
+to absorb a spike, and a deliberately slow, stepped scale-down to avoid flapping.

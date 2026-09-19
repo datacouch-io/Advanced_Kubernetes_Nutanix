@@ -1,0 +1,48 @@
+Lab 5 — Operators, Finalizers & Stuck Deletions — captured evidence
+Real GKE cluster: advk8s-day2, project dcproject-462806, us-central1-a, k8s v1.35.7-gke. Run 2026-09-19.
+
+=== 5.2  ConfigMap with a custom finalizer ===
+$ kubectl patch configmap protected -p '{"metadata":{"finalizers":["demo.example.com/protect"]}}'
+$ kubectl delete configmap protected --wait=false
+configmap "protected" deleted from default namespace          <- looks deleted...
+$ kubectl get configmap protected -o jsonpath=...
+name=protected  deletionTimestamp=2026-09-19T04:48:27Z  finalizers=["demo.example.com/protect"]   <- but it's still here
+$ kubectl patch configmap protected -p '{"metadata":{"finalizers":null}}'
+$ kubectl get configmap protected
+Error from server (NotFound): configmaps "protected" not found    <- gone once finalizer cleared
+
+=== 5.3  Operator pattern: CRD + CR with a finalizer ===
+$ kubectl apply -f (Widget CRD)  ; kubectl wait --for=condition=Established crd/widgets.example.com
+customresourcedefinition.apiextensions.k8s.io/widgets.example.com condition met
+$ kubectl apply -f (Widget "gadget" with finalizers: ["widgets.example.com/cleanup"])
+$ kubectl delete widget gadget --wait=false
+widget.example.com "gadget" deleted from default namespace
+$ kubectl get widget gadget -o jsonpath=...
+name=gadget  deletionTimestamp=2026-09-19T04:48:46Z  finalizers=["widgets.example.com/cleanup"]  <- stuck
+$ kubectl patch widget gadget -p '{"metadata":{"finalizers":null}}'
+widget.example.com/gadget patched
+$ kubectl get widget gadget
+Error from server (NotFound): widgets.example.com "gadget" not found
+# WARNING: force-removing the finalizer skips the external cleanup the operator's finalizer protected.
+
+=== 5.4  Namespace stuck in Terminating (finalizer-blocked object inside it) ===
+$ kubectl -n stuck-demo patch configmap blocker -p '{"metadata":{"finalizers":["demo.example.com/hold"]}}'
+$ kubectl delete namespace stuck-demo --wait=false
+namespace "stuck-demo" deleted
+$ kubectl get namespace stuck-demo -o jsonpath='phase=...'
+phase=Terminating
+$ kubectl get namespace stuck-demo -o jsonpath='{conditions}'
+NamespaceDeletionDiscoveryFailure=False (ResourcesDiscovered)
+NamespaceDeletionGroupVersionParsingFailure=False (ParsedGroupVersions)
+NamespaceDeletionContentFailure=False (ContentDeleted)
+NamespaceContentRemaining=True (SomeResourcesRemain)          <- what it's waiting on
+NamespaceFinalizersRemaining=True (SomeFinalizersRemain)      <- the finalizer holding it
+# NOTE: these conditions take ~10s to populate after the delete call.
+
+=== 5.5  Fix the root cause ===
+$ kubectl -n stuck-demo patch configmap blocker -p '{"metadata":{"finalizers":null}}'
+configmap/blocker patched
+$ kubectl get namespace stuck-demo        # after ~25s (controller re-checks on an interval)
+Error from server (NotFound): namespaces "stuck-demo" not found
+
+$ kubectl delete crd widgets.example.com   # cleanup

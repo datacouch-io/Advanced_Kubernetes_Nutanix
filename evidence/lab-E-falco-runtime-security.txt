@@ -1,0 +1,36 @@
+=== Falco: runtime detections, live tested on kind via modern eBPF driver ===
+
+Falco 0.44.1 (falcosecurity/falco chart 9.1.0), driver.kind=modern_ebpf -- runs cleanly on
+Docker Desktop for Mac's kind cluster despite some non-fatal tracepoint warnings at startup
+(TOCTOU mitigation degraded for a couple of syscalls; detection itself is unaffected).
+
+=== Built-in rule: Sensitive file opened for reading ===
+$ kubectl exec alpine-test -- cat /etc/shadow
+14:08:44 Warning Sensitive file opened for reading by non-trusted program | file=/etc/shadow
+  process=cat proc_exepath=/bin/busybox parent=sh command=cat /etc/shadow
+  container_name=alpine-test container_image_repository=docker.io/library/alpine
+
+=== Built-in rule: Executing binary not part of base image (Critical) ===
+$ kubectl exec alpine-test -- sh -c 'apk add --no-cache netcat-openbsd; nc -h'
+14:47:44 Critical Executing binary not part of base image | proc_exe=nc
+  exe_flags=EXE_WRITABLE|EXE_UPPER_LAYER container_name=alpine-test
+(the binary was installed at runtime into the container's writable overlay layer --
+ exactly the signature of an attacker installing tools post-compromise, or in this case,
+ us installing netcat live into a running container.)
+
+=== Custom rule: Canary File Accessed ===
+Rule (deployed via Helm values.customRules):
+  condition: open_read and container and fd.name = "/etc/canary-do-not-read.txt"
+$ kubectl exec alpine-test -- cat /etc/canary-do-not-read.txt
+14:50:27 Critical Canary file was read (user=root command=cat /etc/canary-do-not-read.txt
+  container_name=alpine-test image=docker.io/library/alpine)
+
+Note: an earlier custom-rule attempt (detect execution of 'nc'/'ncat'/'netcat' via
+spawned_process+proc.name) loaded without any schema error but never fired on a real nc
+execution, despite the binary and event genuinely occurring (confirmed separately by the
+built-in 'not part of base image' rule catching the exact same nc invocation). Root cause
+not conclusively identified; switching to an open_read/fd.name-based canary-file condition
+instead of a spawned_process/proc.name-based one resolved it immediately and reliably on
+the first try. If your own custom proc.name-based rule silently doesn't fire despite loading
+cleanly, try rephrasing the condition around a different event class (open_read, connect,
+ etc.) before assuming your rule syntax is broken.

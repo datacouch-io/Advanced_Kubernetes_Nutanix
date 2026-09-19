@@ -1,0 +1,100 @@
+Lab 1 — Reconciliation Tracing — captured evidence
+Cluster: kind "advk8s-day1", 1 control-plane + 3 workers, Kubernetes v1.37.0
+All output below is from a real run on that cluster (2026-09-19).
+
+=== 1.2  Desired state declared ===
+
+$ kubectl get nodes
+NAME                        STATUS   ROLES           AGE   VERSION
+advk8s-day1-control-plane   Ready    control-plane   18m   v1.37.0
+advk8s-day1-worker          Ready    <none>          18m   v1.37.0
+advk8s-day1-worker2         Ready    <none>          18m   v1.37.0
+advk8s-day1-worker3         Ready    <none>          18m   v1.37.0
+
+$ kubectl create deployment web --image=nginx:1.27 --replicas=3
+deployment.apps/web created
+$ kubectl rollout status deployment/web
+deployment "web" successfully rolled out
+
+=== 1.3  Desired vs observed, in one object ===
+
+$ kubectl get deploy web -o jsonpath='spec.replicas={.spec.replicas} status.replicas={.status.replicas} ready={.status.readyReplicas} generation={.metadata.generation} observedGeneration={.status.observedGeneration}'
+spec.replicas=3  status.replicas=3  ready=3  generation=1  observedGeneration=1
+
+$ kubectl get rs -l app=web -o 'custom-columns=RS:.metadata.name,DESIRED:.spec.replicas,OWNER:.metadata.ownerReferences[0].kind'
+RS              DESIRED   OWNER
+web-69c6f74b8b  3         Deployment
+# three Pods, one on each worker node.
+
+=== 1.4  Disruption #1: delete a Pod -> ReplicaSet recreates it ===
+
+$ kubectl delete pod web-69c6f74b8b-6tjkf
+pod "web-69c6f74b8b-6tjkf" deleted from default namespace
+$ kubectl get pods -l app=web           # a few seconds later
+web-69c6f74b8b-4jmfm   1/1   Running   0   5s      <- brand-new replacement
+web-69c6f74b8b-9g4pc   1/1   Running   0   2m25s
+web-69c6f74b8b-9g6fh   1/1   Running   0   2m25s
+
+=== 1.5  Disruption #2: level-triggered proof ===
+
+$ RS=web-69c6f74b8b
+$ kubectl scale rs "$RS" --replicas=1
+replicaset.apps/web-69c6f74b8b scaled
+$ kubectl get rs "$RS" -o jsonpath='rs.spec.replicas={.spec.replicas}'   # read back immediately
+rs.spec.replicas=3
+# The Deployment controller reverted the hand-edit faster than the next GET could observe the "1".
+
+$ kubectl delete rs "$RS"
+replicaset.apps "web-69c6f74b8b" deleted from default namespace
+$ kubectl get rs -l app=web    # a few seconds later
+NAME             DESIRED   CURRENT   READY   AGE
+web-69c6f74b8b   3         3         3       4s
+# Rebuilt with the identical name (name = hash of the unchanged Pod template) + 3 fresh Pods (AGE 4s).
+
+=== 1.6  Disruption #3: drain a whole node -> Pods reschedule, count held ===
+
+$ kubectl scale deployment web --replicas=5
+$ kubectl drain advk8s-day1-worker3 --ignore-daemonsets --delete-emptydir-data
+node/advk8s-day1-worker3 cordoned
+Warning: ignoring DaemonSet-managed Pods: kube-system/kindnet-kkpgd, kube-system/kube-proxy-5887d
+evicting pod default/web-69c6f74b8b-qsvf7
+evicting pod default/web-69c6f74b8b-q7nxw
+pod/web-69c6f74b8b-qsvf7 evicted
+pod/web-69c6f74b8b-q7nxw evicted
+node/advk8s-day1-worker3 drained
+
+$ kubectl get node advk8s-day1-worker3
+NAME                  STATUS                     ROLES    AGE   VERSION
+advk8s-day1-worker3   Ready,SchedulingDisabled   <none>   20m   v1.37.0
+
+$ kubectl get pods -l app=web -o wide
+# 5/5 Running, spread only across advk8s-day1-worker and advk8s-day1-worker2 -- zero on worker3.
+
+$ kubectl uncordon advk8s-day1-worker3
+node/advk8s-day1-worker3 uncordoned
+
+=== 1.7  Trace to the actor ===
+
+$ kubectl get events --sort-by=.lastTimestamp | tail
+... Normal  SuccessfulCreate    replicaset/web-69c6f74b8b   Created pod: web-69c6f74b8b-wtnw4
+... Normal  ScalingReplicaSet   deployment/web              Scaled up replica set web-69c6f74b8b from 5 to 6
+... Normal  Scheduled           pod/web-69c6f74b8b-vj6ph    Successfully assigned default/web-69c6f74b8b-vj6ph to advk8s-day1-worker
+... Normal  Pulled              pod/web-69c6f74b8b-vj6ph    Container image "nginx:1.27" already present on machine
+... Normal  Started             pod/web-69c6f74b8b-vj6ph    Container started
+# Named actors: deployment controller (ScalingReplicaSet), replicaset controller (SuccessfulCreate),
+# scheduler (Scheduled), kubelet (Pulled/Created/Started).
+
+$ kubectl -n kube-system logs kube-controller-manager-advk8s-day1-control-plane | grep -i replicaset | tail
+E ... replica_set.go:640] "Unhandled Error" err="sync \"default/web-69c6f74b8b\" failed with
+      read version: 3258 is not as new as written version: 3266 for group resource replicasets.apps"
+# Optimistic-concurrency conflict + retry: the controller wrote from a stale cached read, the API server
+# rejected it, and the controller re-reads and retries. Normal under rapid churn -- level-triggering at work.
+
+=== 1.8  Spec change convergence ===
+
+$ kubectl scale deployment web --replicas=6
+deployment.apps/web scaled
+immediately after:  gen=3  observedGen=3  status.replicas=6  ready=5
+after convergence:  gen=3  observedGen=3  status.replicas=6  ready=6
+# generation/observedGeneration bump together (controller ACKed the new spec instantly);
+# readyReplicas lagged by exactly the one new Pod (5 -> 6) -- that is the real convergence signal.

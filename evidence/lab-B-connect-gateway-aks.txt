@@ -1,0 +1,21 @@
+=== Connect Gateway: kubectl to AKS through Google's proxy, no Azure credentials on the client ===
+
+First attempt (before symlinking gke-gcloud-auth-plugin onto PATH):
+exec: executable gke-gcloud-auth-plugin not found
+(fix: the brew-cask gcloud install puts it in google-cloud-sdk/bin/, which isn't itself on PATH
+ -- only the google-cloud-sdk root is. Symlink: ln -sf .../google-cloud-sdk/bin/gke-gcloud-auth-plugin /opt/homebrew/bin/)
+
+Second attempt (plugin fixed, RBAC not yet granted):
+Error from server (Forbidden): nodes is forbidden: User "training@datacouch.io" cannot list resource "nodes"
+(fleet attachment gives VISIBILITY, not Kubernetes RBAC permission -- these are separate)
+
+$ gcloud container fleet memberships generate-gateway-rbac --membership=advk8s-aks \
+    --users=training@datacouch.io --role=clusterrole/cluster-admin \
+    --context=advk8s-aks --kubeconfig=~/.kube/config --apply
+Successfully applied the RBAC policy to cluster.
+
+$ gcloud container fleet memberships get-credentials advk8s-aks
+$ kubectl get nodes   (no az CLI, no Azure credentials involved -- pure GCP identity through Connect Gateway)
+NAME                                STATUS   ROLES    AGE   VERSION
+aks-nodepool1-98415359-vmss000000   Ready    <none>   11m   v1.35.7
+aks-nodepool1-98415359-vmss000001   Ready    <none>   11m   v1.35.7

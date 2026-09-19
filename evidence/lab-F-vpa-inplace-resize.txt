@@ -1,0 +1,23 @@
+=== VPA InPlaceOrRecreate mode: live resize with ZERO pod restarts ===
+
+Note: updateMode 'Auto' is now DEPRECATED (VPA emits a warning and points to explicit modes:
+'Recreate', 'Initial', or 'InPlaceOrRecreate'). Use InPlaceOrRecreate -- it uses Kubernetes'
+in-place pod resize (the /resize subresource) when possible, falling back to recreate only
+when a resize can't be done live (e.g. shrinking below what's already allocated on some setups).
+
+$ kubectl patch vpa vpa-demo --type=merge -p '{"spec":{"updatePolicy":{"updateMode":"InPlaceOrRecreate"}}}'
+
+VPA updater log (leader):
+  "In-place update approved" pod=default/vpa-demo-...
+  "Calculated patches": requests.cpu=247m requests.memory=250Mi limits.cpu=494m limits.memory=500Mi
+  "In-place patched pod /resize subresource"
+  Event: InPlaceResizedByVPA -- "Pod was resized in place by VPA Updater."
+
+$ kubectl get pods -l app=vpa-demo
+NAME                        READY   STATUS    RESTARTS   AGE
+vpa-demo-54ddbf7868-pf5vs   1/1     Running   0          10m
+vpa-demo-54ddbf7868-wfgn2   1/1     Running   0          10m
+
+Before: requests cpu=100m mem=50Mi, limits cpu=200m mem=100Mi (our original deploy-time guess)
+After:  requests cpu=247m mem=250Mi, limits cpu=494m mem=500Mi (VPA's measured recommendation)
+RESTARTS: 0 for both pods -- the resize happened live, no eviction, no downtime.

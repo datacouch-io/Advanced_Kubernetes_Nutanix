@@ -1,0 +1,24 @@
+=== GKE Workload Identity Federation: pod identity isolation, live tested ===
+
+Setup: KSA 'wi-demo-ksa' bound to GSA 'wi-demo-gsa@dcproject-462806.iam.gserviceaccount.com'
+via roles/iam.workloadIdentityUser. GSA granted roles/storage.objectViewer on one test bucket only.
+
+=== Pod using the bound KSA (wi-demo-ksa) ===
+$ curl metadata.google.internal/.../service-accounts/default/email
+wi-demo-gsa@dcproject-462806.iam.gserviceaccount.com
+
+$ gcloud storage cat gs://<bucket>/test-file.txt
+hello from workload identity federation
+
+=== Pod using the default (unbound) KSA ===
+$ curl metadata.google.internal/.../service-accounts/default/email
+dcproject-462806.svc.id.goog   <- not a usable identity, NOT the node's default compute SA
+
+$ gcloud storage cat gs://<bucket>/test-file.txt   (same bucket)
+ERROR: HTTPError 403: Caller does not have storage.objects.get access ...
+This command is authenticated as dcproject-462806.svc.id.goog
+
+Confirms: only pods explicitly bound via the KSA annotation inherit the GSA's permissions;
+every other pod on the same node gets no usable cloud identity at all (not even a degraded one).
+This is the actual security property Workload Identity Federation buys you over the old node-wide
+default-service-account model, where every pod on a node inherited the SAME powerful identity.

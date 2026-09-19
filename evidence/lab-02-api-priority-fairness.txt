@@ -1,0 +1,83 @@
+Lab 2 — API Request Lifecycle & Priority and Fairness — captured evidence
+Cluster: kind "advk8s-day1", Kubernetes v1.37.0.  Real run 2026-09-19.
+
+=== 2.2  A single request's lifecycle (kubectl -v=8) ===
+
+$ kubectl get ns -v=8 2>&1 | grep -iE '"Request" verb=|"Response" status=|X-Kubernetes-Pf'
+round_trippers.go:527] "Request" verb="GET" url="https://127.0.0.1:54279/api/v1/namespaces?limit=500" headers=<
+round_trippers.go:632] "Response" status="200 OK" headers=<
+	X-Kubernetes-Pf-Flowschema-Uid: 20c2f0b7-dca9-4599-8a08-c018b806d10a
+	X-Kubernetes-Pf-Prioritylevel-Uid: 06412db5-fb07-462e-8323-f27dda9ae530
+# Every request is classified; the two Pf headers name the FlowSchema + PriorityLevel it used.
+
+=== 2.3  Built-in FlowSchemas (precedence order) + priority levels ===
+
+$ kubectl get flowschemas -o 'custom-columns=NAME:...,PRIORITYLEVEL:...,PRECEDENCE:...'
+NAME                           PRIORITYLEVEL     PRECEDENCE
+exempt                         exempt            1
+probes                         exempt            2
+system-leader-election         leader-election   100
+system-node-high               node-high         400
+system-nodes                   system            500
+kube-controller-manager        workload-high     800
+kube-scheduler                 workload-high     800
+kube-system-service-accounts   workload-high     900
+service-accounts               workload-low      9000
+global-default                 global-default    9900
+catch-all                      catch-all         10000
+
+$ kubectl get prioritylevelconfigurations -o 'custom-columns=NAME:...,TYPE:...,SHARES:...'
+NAME              TYPE      SHARES
+catch-all         Limited   5
+exempt            Exempt    <none>
+global-default    Limited   20
+leader-election   Limited   10
+node-high         Limited   40
+system            Limited   30
+workload-high     Limited   40
+workload-low      Limited   100
+# Control-plane traffic (kube-controller-manager/scheduler, system-nodes, leader-election) sits in
+# protected high-precedence lanes; user traffic falls through to global-default / catch-all.
+
+=== 2.4  Custom restricted lane + classification + seat allocation ===
+
+$ kubectl apply -f (restricted-storm PriorityLevelConfiguration, NCS=1, Reject) + (storm-user-fs FlowSchema)
+prioritylevelconfiguration.flowcontrol.apiserver.k8s.io/restricted-storm created
+flowschema.flowcontrol.apiserver.k8s.io/storm-user-fs created
+$ kubectl create clusterrolebinding storm-user-view --clusterrole=view --user=storm-user
+clusterrolebinding.rbac.authorization.k8s.io/storm-user-view created
+
+# storm-user classifies into -> restricted-storm
+
+$ kubectl get --raw /metrics | grep nominal_limit_seats | grep -E 'restricted-storm|global-default|workload-low'
+apiserver_flowcontrol_nominal_limit_seats{priority_level="global-default"} 49
+apiserver_flowcontrol_nominal_limit_seats{priority_level="restricted-storm"} 3
+apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-low"} 244
+# Seats are proportional to shares: NCS=1 -> only 3 seats.
+
+=== 2.5  Storm test: critical traffic survives ===
+
+# 60 concurrent LISTs as storm-user (raw HTTP status via kubectl proxy + curl):
+storm status distribution (storm-user):
+  43 200
+  17 429
+# a critical admin request in the same window:
+critical admin GET /api/v1/namespaces -> 200
+
+$ kubectl get --raw /metrics | grep rejected_requests_total | grep restricted-storm
+apiserver_flowcontrol_rejected_requests_total{...,priority_level="restricted-storm",reason="concurrency-limit"} 68
+apiserver_flowcontrol_rejected_requests_total{...,priority_level="restricted-storm",reason="queue-full"} 17
+# The noisy client is throttled inside its own 3-seat lane; admin traffic in another lane is untouched.
+
+GOTCHA 1: kubectl retries 429s client-side (client-go backoff), so a `kubectl get --as=storm-user`
+loop shows almost no 429s -- requests just get slow. Use raw curl or the rejected_requests_total metric.
+GOTCHA 2: `wait` with no args also waits on the backgrounded `kubectl proxy` (never exits) -- capture the
+curl PIDs and `wait "${pids[@]}"`.
+
+=== 2.6  Cleanup ===
+$ kubectl delete flowschema storm-user-fs; kubectl delete prioritylevelconfiguration restricted-storm; kubectl delete clusterrolebinding storm-user-view
+flowschema... "storm-user-fs" deleted
+prioritylevelconfiguration... "restricted-storm" deleted
+clusterrolebinding... "storm-user-view" deleted
+$ kubectl get flowschema storm-user-fs
+Error from server (NotFound): flowschemas.flowcontrol.apiserver.k8s.io "storm-user-fs" not found

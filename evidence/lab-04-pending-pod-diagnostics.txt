@@ -1,0 +1,47 @@
+Lab 4 — Pending-Pod Diagnostics — captured evidence
+Real GKE cluster: advk8s-gke, project dcproject-462806, zone us-central1-a, 2x e2-medium, k8s v1.35.7-gke.
+Run 2026-09-19.
+
+=== 4.2  Allocatable < capacity ===
+$ kubectl get nodes -o custom-columns='NODE,CPU_ALLOC,CPU_CAP,MEM_ALLOC'
+NODE                                        CPU_ALLOC   CPU_CAP   MEM_ALLOC
+gke-advk8s-gke-default-pool-a8b52521-mj2z   940m        2         2866856Ki
+gke-advk8s-gke-default-pool-a8b52521-mw3j   940m        2         2866864Ki
+# The scheduler fits Pods into ALLOCATABLE (940m), not capacity (2 vCPU).
+
+=== 4.3  Pending #1: insufficient cpu (Pod requests 5 cores) ===
+$ kubectl describe pod -l app=hog  (Events)
+Warning  FailedScheduling  default-scheduler  0/2 nodes are available: 2 Insufficient cpu.
+                                              preemption: 0/2 nodes ... Preemption is not helpful.
+Normal   NotTriggerScaleUp cluster-autoscaler Pod didn't trigger scale-up
+# (autoscaling not enabled on this cluster -> stays Pending. With --enable-autoscaling it would add a node.)
+FIX: kubectl set resources deployment hog --requests=cpu=100m  -> Running
+
+=== 4.4  Pending #2: node affinity/selector (nodeSelector disktype=ssd) ===
+Warning  FailedScheduling  default-scheduler  0/2 nodes are available: 2 node(s) didn't match Pod's node affinity/selector.
+FIX: kubectl label node <NODE> disktype=ssd  -> the pending Pod schedules onto it
+
+=== 4.5  Pending #3: untolerated taint (dedicated=analytics:NoSchedule on all nodes) ===
+Warning  FailedScheduling  default-scheduler  0/2 nodes are available: 2 node(s) had untolerated taint(s).
+FIX: patch a toleration (key=dedicated, value=analytics, effect=NoSchedule)  -> Running (verified)
+     (or remove the taint: kubectl taint nodes --all dedicated=analytics:NoSchedule- )
+
+=== 4.6  Pending #4: unbound PVC (storageClassName: does-not-exist) ===
+$ kubectl get pvc data
+data   Pending   does-not-exist
+Warning  FailedScheduling  default-scheduler  0/2 nodes are available: pod has unbound immediate PersistentVolumeClaims.
+FIX: recreate PVC with storageClassName: standard-rwo (GKE default, pd.csi.storage.gke.io)  -> Bound -> Pod Running
+
+=== 4.7  All resolved ===
+$ kubectl get pods -l 'app in (hog,picky,worker,needs-storage)' -o wide
+hog-...            1/1  Running
+needs-storage      1/1  Running
+picky-...          1/1  Running
+worker-...         1/1  Running
+$ kubectl get pvc data
+data   Bound   pvc-7d08a59f-...   1Gi   RWO   standard-rwo
+
+GKE StorageClasses available: standard-rwo (default), premium-rwo, dynamic-rwo, standard.
+
+=== 4.x  Cleanup ===
+$ gcloud container clusters delete advk8s-gke --zone us-central1-a --quiet
