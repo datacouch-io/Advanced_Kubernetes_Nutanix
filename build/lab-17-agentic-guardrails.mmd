@@ -1,0 +1,7 @@
+flowchart TB
+    AGENT["AI agent<br/>(ServiceAccount: k8s-agent)"] --> API["kube-apiserver"]
+    API --> AUTHZ{"RBAC: allowed?"}
+    AUTHZ -->|"read (get/list)"| VAPR{"VAP: matches agent<br/>+ mutating verb?"}
+    AUTHZ -->|"write (create/update/delete)<br/>RBAC says YES (over-broad)"| VAPW{"VAP: matches agent<br/>+ mutating verb?"}
+    VAPR -->|"no (read)"| OK["allowed → data returned"]
+    VAPW -->|"yes"| DENY["DENIED + AUDITED<br/>(guardrail message)"]

@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph KUEUE["Kueue admission (cq-train: 3 CPU)"]
+        JA["PyTorchJob A → admitted"]
+        JB["PyTorchJob B → suspended<br/>(no quota left)"]
+    end
+    JA --> TO["Training Operator"]
+    subgraph JOB["job A: torch.distributed (gloo)"]
+        M["master (RANK 0)"]
+        W1["worker (RANK 1)"]
+        W2["worker (RANK 2)"]
+        M <-->|"all_reduce"| W1
+        M <-->|"all_reduce"| W2
+    end
+    TO --> JOB
+    JA -.->|"A finishes → quota freed"| JB
+    JB -->|"now admitted"| TO

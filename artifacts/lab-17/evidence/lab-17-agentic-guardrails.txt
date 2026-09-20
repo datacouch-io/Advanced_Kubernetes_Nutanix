@@ -1,0 +1,21 @@
+# Lab 17 — Guardrailed Agentic Kubernetes — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 15:18:07 IST 2026
+
+=== agent RBAC (over-permissioned): reads AND writes allowed ===
+$ kubectl auth can-i list pods --as=agent -n agent-workspace  -> yes
+$ kubectl auth can-i delete deployments --as=agent -n agent-workspace  -> yes
+
+=== guardrail binding ===
+$ kubectl get vapbinding agent-readonly-guardrail-binding -o jsonpath validationActions
+["Deny","Audit"]
+
+=== agent READ (allowed) ===
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    1/1     1            1           3m45s
+
+=== agent MUTATION (denied + audited by guardrail) ===
+The deployments "web" is invalid: : ValidatingAdmissionPolicy 'agent-readonly-guardrail' with binding 'agent-readonly-guardrail-binding' denied request: Guardrail: the k8s-agent identity is read-only. Mutation denied and audited.
+error: failed to create configmap: configmaps "x" is forbidden: ValidatingAdmissionPolicy 'agent-readonly-guardrail' with binding 'agent-readonly-guardrail-binding' denied request: Guardrail: the k8s-agent identity is read-only. Mutation denied and audited.
+
+=== admin unaffected ===
+deployment.apps/web not labeled

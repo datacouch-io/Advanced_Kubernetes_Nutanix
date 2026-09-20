@@ -1,0 +1,12 @@
+flowchart LR
+    subgraph NODE["kind node"]
+        CONTAINER["alpine-test container"]
+        SYSCALL["kernel syscalls<br/>(open, exec, connect)"]
+        EBPF["modern_ebpf probe<br/>(Falco DaemonSet)"]
+        CONTAINER --> SYSCALL --> EBPF
+    end
+    EBPF --> ENGINE["Falco rules engine"]
+    ENGINE -->|"built-in: sensitive file"| A1["cat /etc/shadow"]
+    ENGINE -->|"built-in: not part of base image"| A2["apk add netcat; nc -h"]
+    ENGINE -->|"custom: canary file"| A3["read /etc/canary-do-not-read.txt"]
+    A1 & A2 & A3 --> ALERT["alert: process, parent,<br/>command, container, k8s pod/ns"]

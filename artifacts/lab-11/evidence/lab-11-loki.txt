@@ -1,0 +1,53 @@
+# Lab 11 — Log-Based Diagnosis with Loki — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 13:47:30 IST 2026
+
+$ kubectl -n loki get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+loki-0                1/1     Running   0          110m
+loki-promtail-dqqvl   1/1     Running   0          110m
+loki-promtail-twlz6   1/1     Running   0          110m
+
+$ kubectl -n shop2 get deploy payments -o jsonpath (container command)
+["sh","-c","i=0; while true; do i=$((i+1)); echo \"$(date -u +%H:%M:%S) INFO request $i handled\"; if [ $((i % 5)) -eq 0 ]; then echo \"$(date -u +%H:%M:%S) ERROR payment failed: connection refused to db:5432\"; fi; sleep 2; done"]
+
+$ kubectl -n shop2 logs deploy/payments --tail=6
+08:17:24 INFO request 3270 handled
+08:17:24 ERROR payment failed: connection refused to db:5432
+08:17:26 INFO request 3271 handled
+08:17:28 INFO request 3272 handled
+08:17:30 INFO request 3273 handled
+08:17:32 INFO request 3274 handled
+
+=== Step 2: all recent logs by label selector ===
+$ logcli query --since=2m --limit=5 '{namespace="shop2"}'
+2026-09-20T13:47:32+05:30 {} 08:17:32 INFO request 3274 handled
+2026-09-20T13:47:30+05:30 {} 08:17:30 INFO request 3273 handled
+2026-09-20T13:47:28+05:30 {} 08:17:28 INFO request 3272 handled
+2026-09-20T13:47:26+05:30 {} 08:17:26 INFO request 3271 handled
+2026-09-20T13:47:24+05:30 {} 08:17:24 ERROR payment failed: connection refused to db:5432
+
+=== Step 3: line filter to the root cause ===
+$ logcli query --since=10m --limit=4 '{namespace="shop2"} |= "ERROR"'
+2026-09-20T13:47:34+05:30 {} 08:17:34 ERROR payment failed: connection refused to db:5432
+2026-09-20T13:47:24+05:30 {} 08:17:24 ERROR payment failed: connection refused to db:5432
+2026-09-20T13:47:14+05:30 {} 08:17:14 ERROR payment failed: connection refused to db:5432
+2026-09-20T13:47:04+05:30 {} 08:17:04 ERROR payment failed: connection refused to db:5432
+
+=== Step 4: count errors over 5m ===
+$ logcli query 'sum(count_over_time({namespace="shop2"} |= "ERROR" [5m]))'
+# (metric query -> range vector; value is steady at 30, dipping to 29 only at
+#  window boundaries — one error every ~10s over a 5m window = ~30)
+... "values": [ [1789892258, "30"], [1789892244, "30"], [1789892230, "30"], ... ]
+
+=== available stream labels ===
+$ logcli labels
+app
+component
+container
+filename
+instance
+job
+namespace
+node_name
+pod
+stream

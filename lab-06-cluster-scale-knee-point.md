@@ -1,15 +1,48 @@
-# Lab 6 — Cluster Scale Knee-Point
+# Lab 6 — Find the Cluster's Breaking Point (Cluster Scale Knee-Point)
 
 **Day 2 · Extending and Operating the Platform Under Pressure**
 
-> Every number here was measured on a **real GKE cluster** (`advk8s-day2`, `dcproject-462806`), a fixed two-node pool. We scaled a Deployment in steps and timed how long each step took to become fully `Ready`. The graph is generated from those real measurements. The standout: time-to-ready is flat and near-instant while Pods fit the nodes' free CPU, then at one specific replica count it **falls off a cliff** — the Pods can't schedule at all and the step never converges. That replica count is the knee: the cluster's real capacity, which is far below the sum of its nominal vCPUs. <!-- verified-status -->
+> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-day2`, `dcproject-462806`), a fixed two-node pool. Every number and the graph come from a real run. What you'll prove: time-to-ready is flat and near-instant while Pods fit — then at one specific replica count it **falls off a cliff**, because the cluster ran out of schedulable CPU. That's the knee, and it's far below the cluster's raw vCPU count.
 
 ## What you'll learn
 
-- What a scaling **knee-point** is: the replica count where time-to-ready stops being flat and degrades sharply, because the cluster ran out of *schedulable* capacity.
-- Why a cluster's real capacity is much smaller than its raw vCPU count — system DaemonSets, kube-dns, kube-proxy and friends reserve a large slice of every node's allocatable before your first Pod.
-- How to measure the knee yourself — scale in steps, time each step to `Ready` — and read the resulting curve.
-- What actually happens past the knee (`Pending` Pods, `Insufficient cpu`) and the three ways to move the knee out: bigger nodes, more nodes, or the cluster autoscaler.
+- What a scaling **knee-point** is: the replica count where time-to-ready stops being flat and degrades sharply.
+- Why a cluster's *real* capacity is far smaller than its raw vCPU count — system Pods (kube-dns, kube-proxy, …) reserve a big slice of every node before your first Pod lands.
+- How to measure the knee yourself: scale in steps, time each step to `Ready`, and read the curve.
+- What actually happens past the knee (`Pending` Pods, `Insufficient cpu`) and the three ways to move it out.
+
+## What you'll do
+
+You'll take a fixed two-node cluster, scale a Deployment up in steps (2, 4, 6, … 16 replicas), and time how long each step takes to become fully `Ready`. You'll plot the result and see a flat line that suddenly cliffs — the knee — then look at exactly why the Pods past it can't schedule.
+
+## Time & cost
+
+- **Time:** ~35 minutes.
+- **Cost:** negligible beyond the Day-2 cluster — this runs on the fixed two nodes and adds no capacity.
+
+---
+
+## Before you start
+
+- **Where you'll work:** in a **terminal** on your own machine.
+- **Tools you need:** `gcloud`, `kubectl`.
+- **Cluster:** reuse the Day-2 GKE cluster from [Lab 5](lab-05-operators-finalizers.md), as a **fixed two-node pool** (autoscaling off, so the knee is a clean, fixed boundary rather than a moving target):
+
+```bash
+gcloud container clusters update advk8s-day2 --zone us-central1-a \
+  --no-enable-autoscaling --node-pool default-pool
+gcloud container clusters resize advk8s-day2 --node-pool default-pool --num-nodes 2 --zone us-central1-a --quiet
+```
+
+> **Nutanix note.** The measurement technique and the finding — real capacity is far below raw vCPU, and time-to-ready cliffs at the boundary — are identical on any platform. The per-node system reservation differs (GKE's managed DaemonSets vs. NKE's), so the *exact* knee replica count is platform-specific, but the shape is universal. On NKE you'd move the knee out with a bigger node pool or the Kubernetes Cluster Autoscaler, exactly as GKE does (we turned autoscaling off here on purpose so the boundary stays put and is measurable).
+
+---
+
+## The idea in 60 seconds
+
+A node's **allocatable** CPU is already less than its physical vCPU (the kubelet/OS reserve some). Then, before *any* of your workloads land, system Pods — `kube-dns`, `kube-proxy`, `node-local-dns`, CSI drivers, metrics — reserve a big chunk of what's left. So a cluster's *real* capacity for your Pods is a small fraction of its "2 vCPU × 2 nodes = 4 cores" on paper.
+
+While your Pods fit into that real free CPU, the scheduler places them in **seconds** — the flat part of the curve. The instant a step asks for more than the free CPU can hold, the extra Pods go `Pending` with `Insufficient cpu`, and on a fixed cluster they stay there. That's the knee — a hard boundary, which makes scale-up time *bimodal*: near-instant below it, never above it.
 
 ```mermaid
 flowchart TB
@@ -23,36 +56,13 @@ flowchart TB
     MORE --> DONE
 ```
 
-## Time & cost
-
-- **Time:** ~35 minutes.
-- **Cost:** negligible beyond the Day-2 cluster itself — this runs on the fixed two nodes and adds no capacity. Reuses `advk8s-day2`.
-
-## Prerequisites
-
-Complete the [Setup Environment Guide](00-setup-environment-guide.md). Reuses the Day-2 GKE cluster from [Lab 5](lab-05-operators-finalizers.md) as a **fixed two-node pool** (autoscaling off, so the knee is a clean capacity boundary rather than a moving target):
-
-```bash
-gcloud container clusters update advk8s-day2 --zone us-central1-a \
-  --no-enable-autoscaling --node-pool default-pool
-gcloud container clusters resize advk8s-day2 --node-pool default-pool --num-nodes 2 --zone us-central1-a --quiet
-```
-
-> **Nutanix note.** The measurement technique and the finding — real capacity is far below raw vCPU, and time-to-ready cliffs at the capacity boundary — are identical on any platform. The per-node system reservation differs (GKE's managed DaemonSets vs. NKE's), so the *exact* knee replica count is platform-specific, but the shape is universal. On NKE you'd move the knee out with a bigger node pool or the Kubernetes Cluster Autoscaler, exactly as GKE does with its autoscaler (which we deliberately turned off here to keep the boundary fixed).
-
 ---
 
-## 6.1 Why the knee exists, and why it's lower than you think
+## Step 1 — See how little CPU is actually free
 
-A node's **allocatable** CPU is already less than its physical vCPU (the kubelet and OS reserve some). Then, before any of your workloads land, a pile of **system Pods** — `kube-dns`, `kube-proxy`, `node-local-dns`, CSI drivers, metrics — reserve a big chunk of what's left. On our `e2-medium` nodes (940m allocatable), those reservations leave only a couple of hundred millicores free per node. So the cluster's *real* capacity for your Pods is a small fraction of its "2 vCPU × 2 nodes = 4 cores" on paper.
+**Goal:** confirm a fixed two-node pool and measure the real free capacity, then create the Deployment you'll scale.
 
-While your Pods fit into that real free CPU, the scheduler places them in **seconds** — the flat part of the curve. The instant a step asks for more than the free CPU can hold, the extra Pods go `Pending` with `Insufficient cpu`, and on a fixed cluster they stay there: the step never reaches `Ready`. That's the knee — and because it's a hard boundary, scale-up time is *bimodal*: near-instant below it, never above it. Capacity planning is about knowing where that boundary is, not about the average.
-
----
-
-## 6.2 The setup
-
-Confirm a fixed two-node pool, look at how little CPU is actually free per node, and create a Deployment whose Pods each request `50m`:
+**1. Check the nodes and how much CPU is already reserved, then create a Deployment whose Pods each request `50m`:**
 
 ```bash
 kubectl get nodes --no-headers | grep -c ' Ready '     # 2
@@ -64,21 +74,25 @@ kubectl create deployment scaletest --image=nginx:1.27 --replicas=0
 kubectl set resources deployment scaletest --requests=cpu=50m
 ```
 
-![Two nodes; most of each node's CPU already reserved by system Pods](screenshots/lab-06/01-setup.png)
+**What you should see:** two nodes, each with **940m allocatable** but a large fraction already requested by `kube-system` (in our run ~753m on one node, ~561m on the other — two `kube-dns` Pods at ~260m each dominate). Only **~560m** is free cluster-wide — about eleven `50m` Pods.
 
-**Verified result:** two nodes, each with **940m allocatable** but a large fraction already requested by `kube-system` (in our run ~753m on one node, ~561m on the other — dominated by two `kube-dns` Pods at ~260m each, `kube-proxy` at 100m, and so on). Only ~560m is free *cluster-wide* — about eleven `50m` Pods. That's the real capacity, and it's where the knee will land.
+![Two nodes; most of each node's CPU already reserved by system Pods](artifacts/lab-06/screenshots/01-setup.png)
+
+**What this means:** that ~560m is the real capacity, and it's where the knee will land — around 11–12 of your Pods, not the 4 cores the cluster advertises.
 
 ---
 
-## 6.3 Measure: scale in steps and time each to Ready
+## Step 2 — Measure: scale in steps and time each to Ready
 
-Scale through a sequence of targets, timing each step to fully `Ready` (capped at 75s — past that we call it "did not converge") and recording how many Pods ended up `Running` vs `Pending`:
+**Goal:** scale through a sequence of replica counts, timing each step to fully `Ready` (capped at 20s — past that we call it "did not converge").
+
+**1. Run the measurement loop:**
 
 ```bash
 for N in 2 4 6 8 10 12 14 16; do
   start=$(date +%s)
   kubectl scale deployment scaletest --replicas=$N
-  kubectl rollout status deployment/scaletest --timeout=75s
+  kubectl rollout status deployment/scaletest --timeout=20s
   end=$(date +%s)
   ready=$(kubectl get pods -l app=scaletest --field-selector=status.phase=Running --no-headers | wc -l | tr -d ' ')
   pending=$(kubectl get pods -l app=scaletest --field-selector=status.phase=Pending --no-headers | wc -l | tr -d ' ')
@@ -86,40 +100,58 @@ for N in 2 4 6 8 10 12 14 16; do
 done
 ```
 
-![The measurement: flat and fast, then a cliff](screenshots/lab-06/02-measurement.png)
+**What you should see:** flat and fast up to the boundary, then a wall:
 
-**Verified result:** <!-- fill table after measurement -->
+| replicas | time to Ready | ready | pending |
+|---:|---:|---:|---:|
+| 2 | 2s | 2 | 0 |
+| 4 | 2s | 4 | 0 |
+| 6 | 2s | 6 | 0 |
+| 8 | 3s | 8 | 0 |
+| 10 | 3s | 10 | 0 |
+| **12** | **22s (timeout)** | **10** | **2** |
+| 14 | 22s (timeout) | 10 | 4 |
+| 16 | 23s (timeout) | 10 | 6 |
+
+![The measurement: flat and fast, then a cliff](artifacts/lab-06/screenshots/02-measurement.png)
+
+**What this means:** up to **10** replicas everything is `Ready` in 2–3 seconds. At **12**, two Pods can't be placed — `ready` sticks at 10 and the step times out. The cluster's real capacity is exactly 10 of these `50m` Pods (≈500m), matching the ~560m free from Step 1. The knee is at 12.
 
 ---
 
-## 6.4 The knee, graphed
+## Step 3 — Graph the knee
 
-Plotting time-to-ready against replicas makes the knee unmistakable — flat and near-zero, then a wall at the capacity boundary:
+**Goal:** plot time-to-ready against replicas so the knee is unmistakable.
 
-![Time-to-ready vs replicas — the knee where Pods stop fitting](screenshots/lab-06/knee-chart.png)
+The chart below is generated from the measurement above (a small script, `tools/scale_chart.py`, turns the numbers into this SVG/PNG):
 
-<!-- interpretation filled after measurement -->
+![Time-to-ready vs replicas — the knee where Pods stop fitting](artifacts/lab-06/diagrams/knee-chart.png)
+
+**What this means:** the green points (2–10) sit flat along the bottom at 2–3 seconds. Then the line goes almost vertical — the orange point at 12 is the knee, where Pods started going `Pending` and the step stopped converging. There's no gentle ramp: the jump from "instant" to "never" happens between two adjacent steps. That's why the *average* scale-up time is a useless planning number, and the knee is the only one that matters.
 
 ---
 
-## 6.5 What's happening past the knee
+## Step 4 — Look at what's stuck past the knee
 
-The cliff isn't the scheduler being slow — it's Pods that cannot be placed at all:
+**Goal:** confirm the cliff is unschedulable Pods, not slow ones.
+
+**1. List the Pending Pods and read why:**
 
 ```bash
 kubectl get pods -l app=scaletest --field-selector=status.phase=Pending
-kubectl describe pod -l app=scaletest | grep -m1 'Insufficient cpu'
+PEND=$(kubectl get pods -l app=scaletest --field-selector=status.phase=Pending -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod "$PEND" | grep -m1 'Insufficient cpu'
 ```
 
-![Pending Pods with Insufficient cpu past the knee](screenshots/lab-06/03-pending-past-knee.png)
+**What you should see:** several `Pending` Pods, and a `FailedScheduling` event reading **`0/2 nodes are available: 2 Insufficient cpu.`**
 
-**Verified result:** <!-- fill after measurement -->
+![Pending Pods with Insufficient cpu past the knee](artifacts/lab-06/screenshots/03-pending-past-knee.png)
 
-**Moving the knee out** means adding real capacity — bigger nodes (more allocatable each), more nodes, or the cluster autoscaler, which watches for exactly these `Pending` Pods and provisions a node automatically (we turned it off for this lab precisely so the boundary would stay put and be measurable).
+**What this means:** these Pods aren't slow — they're *unschedulable*. On this fixed cluster they'll wait forever. **Moving the knee out** means adding real capacity: bigger nodes (more allocatable each), more nodes, or the cluster autoscaler — which watches for exactly these `Pending` Pods and provisions a node automatically (we turned it off here so the boundary would stay put).
 
 ---
 
-## 6.6 Clean up
+## Step 5 — Clean up
 
 ```bash
 kubectl delete deployment scaletest
@@ -133,19 +165,19 @@ gcloud container clusters delete advk8s-day2 --zone us-central1-a --quiet
 
 ---
 
-## Lab summary
+## What you learned
 
-| Claim | Where it's proven |
-|---|---|
-| Real capacity ≪ raw vCPU (system Pods reserve a lot) | 6.2 — ~560m free of 1880m allocatable |
-| Time-to-ready is flat while Pods fit | 6.3 / 6.4 — flat low steps |
-| It cliffs at the replica count that exceeds free CPU | 6.4 — the knee on the graph |
-| Past the knee, Pods are Pending (`Insufficient cpu`), not slow | 6.5 |
-| Move the knee out with bigger/more nodes or the autoscaler | 6.1 / 6.5 |
+| You saw… | in Step | proof |
+|---|---|---|
+| Real capacity ≪ raw vCPU (system Pods reserve a lot) | 1 | ~560m free of 1880m allocatable |
+| Time-to-ready is flat while Pods fit | 2 / 3 | flat low steps |
+| It cliffs at the replica count that exceeds free CPU | 3 | the knee on the graph |
+| Past the knee, Pods are `Pending` (Insufficient cpu), not slow | 4 | `FailedScheduling` event |
+| Move the knee out with bigger/more nodes or the autoscaler | 4 |
 
 ## Evidence
 
-Real screenshots and the generated chart live in [`screenshots/lab-06/`](screenshots/lab-06/). Captured measurements are in [`evidence/lab-06-cluster-scale-knee-point.txt`](evidence/lab-06-cluster-scale-knee-point.txt).
+Real screenshots and the generated chart are in [`artifacts/lab-06/`](artifacts/lab-06/), and the captured measurements are in [`artifacts/lab-06/evidence/lab-06-cluster-scale-knee-point.txt`](artifacts/lab-06/evidence/lab-06-cluster-scale-knee-point.txt).
 
 ---
 

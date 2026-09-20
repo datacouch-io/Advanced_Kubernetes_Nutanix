@@ -1,0 +1,45 @@
+Lab 7 — Cilium & Hubble Flow Diagnosis — captured evidence
+Dedicated kind cluster "cilium-lab" (3 nodes), Cilium 1.20.1 as CNI (kube-proxy replaced), Hubble enabled.
+Run 2026-09-19/20.
+
+=== 7.2  Cilium installed as CNI ===
+$ cilium install --set hubble.relay.enabled=true ; cilium status --wait
+Cilium:             OK
+Operator:           OK
+Hubble Relay:       OK
+Cluster Pods:       4/4 managed by Cilium
+# nodes flip NotReady -> Ready once Cilium (the CNI) is up. kube-proxy auto-detected absent; Cilium replaces it.
+
+=== 7.3  Baseline: FORWARDED ===
+$ kubectl exec client -- curl -s -o /dev/null -w "%{http_code}" http://backend
+200
+$ hubble observe --pod client --to-label app=backend
+default/client:39056 (ID:1609) -> default/backend-...:80 (ID:41353) to-endpoint FORWARDED (TCP Flags: SYN)
+...FORWARDED (ACK, PSH) / (ACK, FIN)
+# client identity = 1609, backend identity = 41353. No policy yet -> allowed.
+
+=== 7.4  Policy applied -> DROPPED ===
+$ kubectl apply -f (CiliumNetworkPolicy: backend ingress fromEndpoints role=frontend)
+ciliumnetworkpolicy.cilium.io/backend-allow-frontend created
+$ kubectl exec client -- curl --max-time 5 http://backend   ; echo exit=$?
+exit=28    (timeout -- connection never establishes)
+$ hubble observe --pod client --verdict DROPPED
+default/client:37576 (ID:1609) <> default/backend:80 (ID:41353) Policy denied DROPPED (TCP Flags: SYN)
+# Once a CiliumNetworkPolicy selects backend, backend is default-deny for ingress; client (run=client, no
+# role=frontend) is denied. Hubble names the verdict: "Policy denied".
+
+=== 7.5  Fix: change the client's identity (labels) ===
+$ kubectl label pod client role=frontend --overwrite
+$ sleep ~10   # identity must propagate to every node's datapath
+$ kubectl exec client -- curl -s -o /dev/null -w "%{http_code}" http://backend
+200
+$ hubble observe --pod client --to-label app=backend
+default/client:45516 (ID:18439) -> default/backend:80 (ID:41353) to-endpoint FORWARDED
+# The client's identity CHANGED 1609 -> 18439 because its labels changed; the new identity matches the
+# policy's fromEndpoints{role=frontend}, so the verdict flips to FORWARDED. The policy was never edited.
+
+GOTCHA: identity propagation is not instant (~10s in our run). A curl immediately after `kubectl label`
+can still be DROPPED; wait until `hubble observe` shows the identity number change.
+
+=== 7.6  Cleanup ===
+$ kind delete cluster --name cilium-lab

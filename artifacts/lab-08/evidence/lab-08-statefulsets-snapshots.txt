@@ -1,0 +1,27 @@
+Lab 8 — StatefulSets, PVCs & Volume Snapshots — captured evidence
+Real GKE cluster advk8s-lab (dcproject-462806), CSI driver pd.csi.storage.gke.io. Run 2026-09-20.
+
+=== Step 1  StatefulSet + PVC + data ===
+$ kubectl rollout status statefulset/db  -> complete
+$ kubectl exec db-0 -- sh -c 'echo important-data-v1 > /data/message; cat /data/message'
+important-data-v1
+$ kubectl get pvc data-db-0  ->  Bound 1Gi (standard-rwo)
+
+=== Step 2  VolumeSnapshot ===
+$ kubectl apply VolumeSnapshotClass pd-snapclass (driver pd.csi.storage.gke.io)
+$ kubectl apply VolumeSnapshot db-snap (source PVC data-db-0)
+$ kubectl get volumesnapshot db-snap
+NAME      READYTOUSE   RESTORESIZE
+db-snap   true         1Gi
+
+=== Step 3  Disaster: delete StatefulSet + PVC ===
+$ kubectl delete statefulset db ; kubectl delete pvc data-db-0
+$ kubectl get pvc data-db-0 --ignore-not-found   -> (gone)
+$ kubectl get volumesnapshot db-snap             -> still present, ready
+
+=== Step 4  Restore from snapshot ===
+$ kubectl apply PVC data-restored (dataSource: VolumeSnapshot db-snap) + Pod restore-check
+$ kubectl exec restore-check -- cat /data/message
+important-data-v1        <- data survived the full destroy/restore cycle
+
+Nutanix note: identical flow with the Nutanix CSI driver (csi.nutanix.com) in the VolumeSnapshotClass.

@@ -1,34 +1,63 @@
-<!-- provenance-banner -->
-> ♻️ **Reused source — Lab D.** Copied from `datacouch-io/Advanced_Kubernetes` (Lab 8), originally built and tested on **real GKE**. **Not yet adapted or re-tested for the Nutanix Kubernetes platform.** Adaptation weight: HEAVY — GKE Workload Identity Federation + Binary Authorization are GCP-native; needs a Nutanix/portable equivalent (e.g. SPIFFE/SPIRE + cosign/Kyverno) or rescope. See [`REUSED-FROM-REPO.md`](REUSED-FROM-REPO.md) for the full mapping.
+# Lab D — Give Each Pod Only Its Own Identity, and Run Only Signed Images (Workload Identity + Binary Authorization)
 
-# Lab 8 — Configuring GKE Workload Identity Federation and Binary Authorization
+**Day 5 · Kubernetes as the AI-Native Platform**
 
-**Day 2 · Security & Scaling/Optimization**
-
-> Every command below was actually run end to end against a real GKE cluster, and every screenshot is a real `screencapture` of that run.
+> ✅ **Tested end-to-end** on a **real GKE cluster**. Every screenshot is a real capture. Two payoffs: a Pod bound to a specific Google identity reads a bucket while an *unbound* Pod gets **403 with no usable identity at all**; and an unsigned image is **denied admission** until you sign its exact digest — then the same image runs.
 
 ## What you'll learn
 
-- How Workload Identity Federation lets a specific Pod act as a specific GCP service account — and, just as importantly, what identity every *other* Pod gets instead (not the node's powerful default identity, the way it used to work).
-- Setting up Binary Authorization end to end: an attestor backed by a real Cloud KMS signing key, a cluster-enforced policy, and the full deny → sign → allow cycle against a real image.
-- Two real-world gotchas that have nothing to do with either feature conceptually, but that you will hit in practice: Binary Authorization's digest-only requirement, and cross-architecture image pushes.
+- How **Workload Identity Federation** maps a specific Kubernetes ServiceAccount to a specific Google service account — and what identity *every other* Pod gets instead (a placeholder, **not** the node's powerful default).
+- How **Binary Authorization** enforces "only images signed by a trusted attestor may run", end to end: a Cloud KMS signing key, an attestor, a cluster policy, and the full **deny → sign → allow** cycle.
+- Two real gotchas you'll hit in practice: Binary Authorization's digest-only requirement, and cross-architecture image pushes from Apple Silicon.
+
+## What you'll do
+
+You'll create a Workload-Identity-enabled GKE cluster, bind a KSA to a GSA and prove access from both a bound and an unbound Pod, then turn on Binary Authorization and walk an image through deny (by tag), deny (unsigned), sign, and allow.
 
 ## Time & cost
 
 - **Time:** ~75 minutes.
-- **Cost:** real, but small — one small GKE cluster (2× `e2-medium`), a Cloud KMS key (a few cents), Container Analysis/Artifact Registry API usage (free tier covers this lab easily). Comparable to Day 1's cloud labs — a few dollars for the lifetime of the lab if you tear down promptly.
+- **Cost:** small — one 2-node `e2-medium` cluster + a Cloud KMS key (a few cents) + free-tier API usage. A few dollars if you tear down promptly.
 
-## Prerequisites
+---
 
-Complete the [Setup Environment Guide](00-setup-environment-guide.md), with `gcloud` authenticated against a real GCP project with billing enabled. This lab additionally needs Docker running locally (to push a test image) and the `beta` gcloud component:
+## Before you start
 
-```bash
-gcloud components install beta
+- **Where you'll work:** in a **terminal**, with `gcloud` authenticated to a real GCP project with billing enabled.
+- **Tools you need:** `gcloud` (with `beta`: `gcloud components install beta`), `kubectl`, and **Docker running locally** (to push a test image).
+
+> **Nutanix note — this lab is the most GCP-specific in the course, deliberately.** Workload Identity Federation and Binary Authorization are *managed GKE features*, so you see the polished version of two ideas you'll implement differently on **NKE**: on Nutanix, per-Pod identity is typically done with **SPIFFE/SPIRE** (issuing short-lived SVIDs to workloads), and image-signing enforcement with **cosign** (Sigstore) signatures verified by a **Kyverno** `verifyImages` policy at admission (see Lab C for Kyverno). The *concepts* — least-privilege per-workload identity, and admit-only-signed-images — are exactly the same; only the implementing components change. Learn the model here, then map it to SPIRE + cosign/Kyverno on-prem.
+
+---
+
+## The idea in 60 seconds
+
+Two independent trust controls:
+
+- **Workload Identity** stops every Pod from inheriting the node's powerful identity. You bind one **KSA** to one **GSA**; only Pods using that KSA get that GSA's permissions. Everyone else resolves to a placeholder that can't do anything.
+- **Binary Authorization** stops unvetted images from running. An **attestor** (a Container Analysis note + a KMS public key) must have a valid signature over an image's **digest** before the cluster admits it.
+
+```mermaid
+flowchart TB
+    subgraph WI["Workload Identity"]
+        KSA1["Pod wi-test<br/>KSA: wi-demo-ksa (bound)"] -->|"workloadIdentityUser"| GSA["GSA: wi-demo-gsa<br/>storage.objectViewer"]
+        GSA --> BUCKET["GCS bucket"]
+        KSA2["Pod wi-test-unbound<br/>KSA: default"] -.->|"no binding"| PH["svc.id.goog placeholder<br/>403: no access"]
+    end
+    subgraph BA["Binary Authorization"]
+        KMS["Cloud KMS key"] -->|"public key"| ATT["Attestor"]
+        IMGT["image by tag"] --> D1["DENY: needs a digest"]
+        IMGU["image by digest, unsigned"] --> D2["DENY: no attestation"]
+        SIGN["sign-and-create over the digest"] --> ATT
+        ATT -->|"valid signature"| ADMIT["image by digest, signed → Running"]
+    end
 ```
 
 ---
 
-## 8.1 Create the cluster
+## Step 1 — Create a Workload-Identity-enabled cluster
+
+**Goal:** stand up a GKE cluster with a workload pool (this is what turns Workload Identity on).
 
 ```bash
 export PROJECT_ID=YOUR_GCP_PROJECT_ID
@@ -38,239 +67,136 @@ gcloud services enable \
   --project=$PROJECT_ID
 
 gcloud container clusters create advk8s-security \
-  --project=$PROJECT_ID \
-  --zone=us-central1-a \
-  --num-nodes=2 \
-  --machine-type=e2-medium \
-  --disk-size=30 \
+  --project=$PROJECT_ID --zone=us-central1-a \
+  --num-nodes=2 --machine-type=e2-medium --disk-size=30 \
   --workload-pool=${PROJECT_ID}.svc.id.goog \
   --release-channel=regular
-```
 
-`--workload-pool` is what turns on Workload Identity Federation for this cluster. It cannot be enabled after the fact on the *pool identity* setting itself — Workload Identity federation requires the cluster to have a workload pool configured; if you forget this flag at creation, you'd need to update it in, which GKE does support (`gcloud container clusters update --workload-pool=...`), but doing it at creation avoids a second wait.
-
-```bash
 gcloud container clusters get-credentials advk8s-security --zone us-central1-a --project=$PROJECT_ID
-kubectl config rename-context gke_${PROJECT_ID}_us-central1-a_advk8s-security advk8s-security
-kubectl --context advk8s-security get nodes
+kubectl get nodes
 ```
 
-![Two nodes, Ready](screenshots/lab-D/01-gke-nodes.png)
+**What you should see:** two nodes, `Ready`.
+
+![Two GKE nodes, Ready](artifacts/lab-D/screenshots/01-gke-nodes.png)
+
+**What this means:** `--workload-pool` is the flag that enables Workload Identity for the cluster. (You can add it later with `clusters update`, but setting it at creation avoids a second wait.)
 
 ---
 
-## Part A — Workload Identity Federation
+## Step 2 — Bind an identity, and prove it from both sides
 
-### A.1 Concepts, briefly
+**Goal:** bind one KSA to one GSA, then show a bound Pod can read a bucket and an unbound Pod cannot.
 
-Before Workload Identity, every Pod on a GKE node inherited that **node's** default compute service account — meaning any workload on the node could reach anything that node's identity could reach, whether or not it needed to. Workload Identity Federation replaces this with a mapping: a specific **Kubernetes ServiceAccount (KSA)** is bound to a specific **Google service account (GSA)**, and only Pods using that exact KSA get that GSA's permissions. Every other Pod gets no usable cloud identity at all.
-
-```mermaid
-flowchart LR
-    subgraph BOUND["Pod: wi-test"]
-        KSA1["KSA: wi-demo-ksa<br/>annotated with GSA email"]
-    end
-    subgraph UNBOUND["Pod: wi-test-unbound"]
-        KSA2["KSA: default<br/>(no annotation)"]
-    end
-
-    KSA1 -->|"roles/iam.workloadIdentityUser"| GSA["GSA: wi-demo-gsa<br/>roles/storage.objectViewer"]
-    GSA --> BUCKET["GCS bucket<br/>test-file.txt"]
-
-    KSA2 -.->|"no binding exists"| PLACEHOLDER["PROJECT_ID.svc.id.goog<br/>(not a usable identity)"]
-    PLACEHOLDER -- "403: does not have<br/>storage.objects.get access" --> BUCKET
-```
-
-### A.2 Create and bind the identities
+**1. Create and bind the identities:**
 
 ```bash
 kubectl create serviceaccount wi-demo-ksa
-
-gcloud iam service-accounts create wi-demo-gsa \
-  --project=$PROJECT_ID --display-name="Workload Identity demo GSA"
-
+gcloud iam service-accounts create wi-demo-gsa --project=$PROJECT_ID --display-name="WI demo GSA"
 gcloud iam service-accounts add-iam-policy-binding \
   wi-demo-gsa@${PROJECT_ID}.iam.gserviceaccount.com \
   --role roles/iam.workloadIdentityUser \
-  --member "serviceAccount:${PROJECT_ID}.svc.id.goog[default/wi-demo-ksa]" \
-  --project=$PROJECT_ID
-
+  --member "serviceAccount:${PROJECT_ID}.svc.id.goog[default/wi-demo-ksa]" --project=$PROJECT_ID
 kubectl annotate serviceaccount wi-demo-ksa \
   iam.gke.io/gcp-service-account=wi-demo-gsa@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
-### A.3 Give the GSA something real to access
+**2. Give the GSA a real bucket to read:**
 
 ```bash
 BUCKET="gs://${PROJECT_ID}-wi-demo-$(date +%s)"
 gcloud storage buckets create $BUCKET --project=$PROJECT_ID --location=us-central1
 echo "hello from workload identity federation" | gcloud storage cp - ${BUCKET}/test-file.txt
-
 gcloud storage buckets add-iam-policy-binding $BUCKET \
   --member="serviceAccount:wi-demo-gsa@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/storage.objectViewer"
 ```
 
-### A.4 Prove it — from both sides
-
-A Pod using the bound KSA:
+**3. Run a Pod using the *bound* KSA and check its identity + access:**
 
 ```bash
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
-metadata:
-  name: wi-test
+metadata: {name: wi-test}
 spec:
   serviceAccountName: wi-demo-ksa
   containers:
-  - name: gcloud
-    image: google/cloud-sdk:slim
-    command: ["sleep", "3600"]
+  - {name: gcloud, image: google/cloud-sdk:slim, command: ["sleep","3600"]}
 EOF
 kubectl wait --for=condition=Ready pod/wi-test --timeout=90s
-
 kubectl exec wi-test -- curl -sS -H "Metadata-Flavor: Google" \
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
 kubectl exec wi-test -- gcloud storage cat "${BUCKET}/test-file.txt"
 ```
 
-![Bound pod resolves to the GSA identity and reads the bucket](screenshots/lab-D/02-wi-bound-success.png)
+**What you should see:** the Pod's identity resolves to `wi-demo-gsa@…` and it reads the file: `hello from workload identity federation`.
 
-**Verified result:**
+![Bound pod resolves to the GSA and reads the bucket](artifacts/lab-D/screenshots/02-wi-bound-success.png)
 
-```
-wi-demo-gsa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+> ⚠️ **Gotcha — a brand-new cluster's metadata server needs a moment.** On a *freshly created* cluster, the first `gcloud storage cat` inside the Pod can fail with `MetadataServerException: … metadata server is concealed`, even though the `curl` identity check already returns the correct GSA. It's a propagation delay in the metadata proxy sidecar settling on a new node — wait a few seconds and retry before suspecting your IAM bindings.
 
-hello from workload identity federation
-```
-
-> **Tested gotcha:** right after creating this pod on a cluster where Workload Identity was *just* enabled (i.e., a freshly-created cluster, not one that's been running a while), the first `gcloud storage cat` call inside the pod can fail with `ERROR: gcloud crashed (MetadataServerException): The request is rejected. Please check if the metadata server is concealed.` The identity resolution itself (the `curl` to the metadata server) still succeeds and returns the correct bound GSA — only the `gcloud storage` call fails. This is a propagation delay in GKE's metadata server proxy sidecar settling in on a brand-new node, not a real configuration problem: retrying the exact same command moments later succeeds cleanly. If you hit this, wait a few seconds and retry before assuming your IAM bindings are wrong.
-
-Now the other side — a Pod using the **default, unbound** KSA:
+**4. Now run a Pod using the *default, unbound* KSA:**
 
 ```bash
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
-metadata:
-  name: wi-test-unbound
+metadata: {name: wi-test-unbound}
 spec:
   containers:
-  - name: gcloud
-    image: google/cloud-sdk:slim
-    command: ["sleep", "3600"]
+  - {name: gcloud, image: google/cloud-sdk:slim, command: ["sleep","3600"]}
 EOF
 kubectl wait --for=condition=Ready pod/wi-test-unbound --timeout=90s
-
 kubectl exec wi-test-unbound -- curl -sS -H "Metadata-Flavor: Google" \
   "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email"
 kubectl exec wi-test-unbound -- gcloud storage cat "${BUCKET}/test-file.txt"
 ```
 
-![Unbound pod: placeholder identity, 403 denied](screenshots/lab-D/03-wi-unbound-denied.png)
+**What you should see:** the identity resolves to the placeholder `PROJECT_ID.svc.id.goog`, and the read is **denied with HTTP 403** (`Caller does not have storage.objects.get access`).
 
-**Verified result:**
+![Unbound pod: placeholder identity, 403 denied](artifacts/lab-D/screenshots/03-wi-unbound-denied.png)
 
-```
-YOUR_PROJECT_ID.svc.id.goog
-
-ERROR: (gcloud.storage.cat) HTTPError 403: Caller does not have storage.objects.get access ...
-This command is authenticated as YOUR_PROJECT_ID.svc.id.goog
-```
-
-The unbound Pod doesn't fall back to the node's identity, and it doesn't get *some* identity that happens to lack permission — it resolves to `PROJECT_ID.svc.id.goog`, a placeholder that isn't a usable identity for anything. This is the actual security property Workload Identity buys you: the blast radius of "a Pod gets compromised" shrinks from "the whole node's identity" to "nothing, unless that specific Pod was explicitly bound to something." Full evidence: [`evidence/lab-D-workload-identity-federation.txt`](evidence/lab-D-workload-identity-federation.txt).
-
-Clean up before moving on:
-
-```bash
-kubectl delete pod wi-test wi-test-unbound
-```
+**What this means:** the unbound Pod does **not** fall back to the node's identity — it gets a placeholder that's usable for nothing. That's the security property: a compromised Pod's blast radius shrinks from "the whole node's identity" to "nothing, unless that Pod was explicitly bound." Clean up: `kubectl delete pod wi-test wi-test-unbound`.
 
 ---
 
-## Part B — Binary Authorization
+## Step 3 — Turn on Binary Authorization with a KMS-backed attestor
 
-### B.1 Concepts, briefly
+**Goal:** require that images be signed by a trusted attestor before they can run.
 
-Binary Authorization enforces that only images meeting a policy — typically "signed by a specific trusted party" — can be deployed to a cluster. The unit of trust is an **attestor**: a Container Analysis note plus a public key. Something (a CI pipeline, a human, a scanner that only signs off on clean images) signs an image's digest with the corresponding private key; Binary Authorization checks for a valid signature from a trusted attestor before allowing the Pod to be admitted.
-
-```mermaid
-flowchart TB
-    KMS["Cloud KMS key<br/>advk8s-attestor-key"] -->|"public key attached to"| ATT["Attestor: advk8s-attestor<br/>(Container Analysis note)"]
-
-    IMG["nginx@sha256:...<br/>pushed to Artifact Registry"] -->|"1. by tag"| A1["kubectl run --image=nginx:1.27-alpine"]
-    A1 -- "denied: Expected digest<br/>with sha256 scheme" --> DENY1["VIOLATES_POLICY"]
-
-    IMG -->|"2. by digest, unsigned"| A2["kubectl run --image=nginx@sha256:..."]
-    A2 -- "denied: No attestations found" --> DENY2["VIOLATES_POLICY"]
-
-    KMS -->|"sign-and-create"| SIGNED["Attestation for this exact digest"]
-    IMG -->|"3. by digest, signed"| A3["kubectl run --image=nginx@sha256:..."]
-    SIGNED -.->|"attestor checks signature"| ATT
-    ATT -->|"valid, trusted"| A3
-    A3 --> ADMIT["Pod created, Running"]
-```
-
-### B.2 Enable enforcement on the cluster
+**1. Enable enforcement** (a real control-plane update — takes several minutes):
 
 ```bash
-gcloud container clusters update advk8s-security \
-  --zone us-central1-a \
-  --binauthz-evaluation-mode=PROJECT_SINGLETON_POLICY_ENFORCE \
-  --project=$PROJECT_ID
+gcloud container clusters update advk8s-security --zone us-central1-a \
+  --binauthz-evaluation-mode=PROJECT_SINGLETON_POLICY_ENFORCE --project=$PROJECT_ID
 ```
 
-This takes several minutes — it's a real cluster control-plane update, not a quick API flag flip.
-
-### B.3 Create an attestor backed by Cloud KMS
+**2. Create the attestor, a KMS signing key, and attach the public key:**
 
 ```bash
-export NOTE_ID=advk8s-attestor-note
-export ATTESTOR_NAME=advk8s-attestor
-
+export NOTE_ID=advk8s-attestor-note ATTESTOR_NAME=advk8s-attestor
 cat > /tmp/note_payload.json <<EOF
-{
-  "name": "projects/${PROJECT_ID}/notes/${NOTE_ID}",
-  "attestation": {"hint": {"human_readable_name": "Advanced Kubernetes lab attestor"}}
-}
+{"name":"projects/${PROJECT_ID}/notes/${NOTE_ID}","attestation":{"hint":{"human_readable_name":"AdvK8s lab attestor"}}}
 EOF
-
-curl -sS -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $(gcloud auth print-access-token)" \
-    -H "x-goog-user-project: ${PROJECT_ID}" \
-    --data-binary @/tmp/note_payload.json \
-    "https://containeranalysis.googleapis.com/v1/projects/${PROJECT_ID}/notes/?noteId=${NOTE_ID}"
-
+curl -sS -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "x-goog-user-project: ${PROJECT_ID}" --data-binary @/tmp/note_payload.json \
+  "https://containeranalysis.googleapis.com/v1/projects/${PROJECT_ID}/notes/?noteId=${NOTE_ID}"
 gcloud --project="${PROJECT_ID}" container binauthz attestors create "${ATTESTOR_NAME}" \
-    --attestation-authority-note="${NOTE_ID}" \
-    --attestation-authority-note-project="${PROJECT_ID}"
-```
+  --attestation-authority-note="${NOTE_ID}" --attestation-authority-note-project="${PROJECT_ID}"
 
-Create the signing key and attach its public half to the attestor:
-
-```bash
 gcloud kms keyrings create advk8s-binauthz-keyring --location us-central1 --project=$PROJECT_ID
-
-gcloud kms keys create advk8s-attestor-key \
-    --location us-central1 \
-    --keyring advk8s-binauthz-keyring \
-    --purpose asymmetric-signing \
-    --default-algorithm ec-sign-p256-sha256 \
-    --protection-level software \
-    --project=$PROJECT_ID
-
+gcloud kms keys create advk8s-attestor-key --location us-central1 \
+  --keyring advk8s-binauthz-keyring --purpose asymmetric-signing \
+  --default-algorithm ec-sign-p256-sha256 --protection-level software --project=$PROJECT_ID
 gcloud --project="${PROJECT_ID}" container binauthz attestors public-keys add \
-    --attestor="${ATTESTOR_NAME}" \
-    --keyversion-project="${PROJECT_ID}" \
-    --keyversion-location=us-central1 \
-    --keyversion-keyring=advk8s-binauthz-keyring \
-    --keyversion-key=advk8s-attestor-key \
-    --keyversion=1
+  --attestor="${ATTESTOR_NAME}" --keyversion-project="${PROJECT_ID}" \
+  --keyversion-location=us-central1 --keyversion-keyring=advk8s-binauthz-keyring \
+  --keyversion-key=advk8s-attestor-key --keyversion=1
 ```
 
-### B.4 Set the policy to require this attestor
+**3. Set a policy requiring this attestor** (whitelist your distro's *system* image registries, or the cluster's own internals break):
 
 ```bash
 cat > /tmp/binauthz-policy.yaml <<EOF
@@ -282,38 +208,37 @@ defaultAdmissionRule:
 globalPolicyEvaluationMode: ENABLE
 name: projects/${PROJECT_ID}/policy
 admissionWhitelistPatterns:
-- namePattern: gcr.io/gke-release/*
-- namePattern: registry.k8s.io/*
-- namePattern: gke.gcr.io/*
+- {namePattern: gcr.io/gke-release/*}
+- {namePattern: registry.k8s.io/*}
+- {namePattern: gke.gcr.io/*}
 EOF
-
 gcloud container binauthz policy import /tmp/binauthz-policy.yaml --project=$PROJECT_ID
 ```
 
-The whitelist patterns matter — without them, GKE's own system images would also need attestation, which breaks the cluster's own internals. Whitelist your Kubernetes distribution's system image registries, not application registries.
-
-### B.5 Push a real test image
+**4. Push a test image to Artifact Registry:**
 
 ```bash
 gcloud artifacts repositories create advk8s-images --repository-format=docker --location=us-central1 --project=$PROJECT_ID
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-
 docker tag nginx:1.27-alpine us-central1-docker.pkg.dev/${PROJECT_ID}/advk8s-images/nginx:1.27-alpine
 docker push us-central1-docker.pkg.dev/${PROJECT_ID}/advk8s-images/nginx:1.27-alpine
 ```
 
-> **Tested gotcha, Apple Silicon specifically:** if you're pushing from an M-series Mac, `docker push` sends an **arm64** image by default. GKE's standard node pools (`e2-medium` etc.) are **amd64**. The Pod will be admitted (Binary Authorization only cares about the digest, not the architecture) but crash instantly with `exec /docker-entrypoint.sh: exec format error`. We hit exactly this. Fix — resolve the amd64-specific digest from the source image's multi-arch manifest and copy that digest directly, rather than relying on a local `docker pull`:
+> ⚠️ **Gotcha — Apple Silicon pushes an arm64 image; GKE nodes are amd64.** From an M-series Mac, `docker push` sends **arm64** by default. Binary Authorization only checks the *digest*, so the Pod admits — then crashes with `exec format error`. Fix by resolving and copying the amd64-specific digest directly (a plain `docker pull --platform linux/amd64` does **not** reliably fix a cached arm64 tag):
 > ```bash
-> docker buildx imagetools inspect nginx:1.27-alpine | grep -A3 "linux/amd64"
-> # Name: docker.io/library/nginx:1.27-alpine@sha256:<amd64-specific-digest>
->
+> docker buildx imagetools inspect nginx:1.27-alpine | grep -A3 "linux/amd64"   # get the amd64 digest
 > docker buildx imagetools create \
 >   --tag us-central1-docker.pkg.dev/${PROJECT_ID}/advk8s-images/nginx:1.27-alpine-amd64 \
->   docker.io/library/nginx:1.27-alpine@sha256:<amd64-specific-digest>
+>   docker.io/library/nginx:1.27-alpine@sha256:<amd64-digest>
 > ```
-> Note that `docker pull --platform linux/amd64 <image>` does **not** reliably fix this once the arm64 layer is already cached locally under the same tag — `docker` reports "Image is up to date" and silently keeps serving the cached arm64 content. Removing the local tag first (`docker rmi`) didn't help either in our testing. Resolving and copying the digest directly, as above, is the reliable fix.
 
-### B.6 The deny → sign → allow cycle
+**What this means:** the attestor is the unit of trust — a KMS key pair whose public half the cluster trusts. Nothing is signed yet, so nothing custom can run.
+
+---
+
+## Step 4 — The deny → sign → allow cycle
+
+**Goal:** walk one image from rejected to running by signing its digest.
 
 ```bash
 IMAGE="us-central1-docker.pkg.dev/${PROJECT_ID}/advk8s-images/nginx:1.27-alpine-amd64"
@@ -327,75 +252,42 @@ IMAGE_BY_DIGEST="us-central1-docker.pkg.dev/${PROJECT_ID}/advk8s-images/nginx@${
 kubectl run unattested-test --image="$IMAGE" --restart=Never
 ```
 
-![Denied: Expected digest with sha256 scheme, but got tag or malformed digest](screenshots/lab-D/04-binauthz-attempt1-tag.png)
+**What you should see:** `VIOLATES_POLICY: Expected digest with sha256 scheme, but got tag or malformed digest`.
 
-```
-Error from server (VIOLATES_POLICY): ... denied by attestor ...:
-Expected digest with sha256 scheme, but got tag or malformed digest
-```
+![Denied: image referenced by tag, not digest](artifacts/lab-D/screenshots/04-binauthz-attempt1-tag.png)
 
-Binary Authorization refuses tag references outright — an attestation binds to one immutable digest, never to a tag that could point at different content tomorrow.
-
-**Attempt 2 — by digest, unattested:**
+**Attempt 2 — by digest, but unsigned:**
 
 ```bash
 kubectl run binauthz-test --image="$IMAGE_BY_DIGEST" --restart=Never
 ```
 
-![Denied: No attestations found that were valid and signed by a key trusted by the attestor](screenshots/lab-D/05-binauthz-attempt2-unattested.png)
+**What you should see:** `VIOLATES_POLICY: No attestations found that were valid and signed by a key trusted by the attestor`.
 
-```
-Error from server (VIOLATES_POLICY): ... denied by attestor projects/.../attestors/advk8s-attestor:
-No attestations found that were valid and signed by a key trusted by the attestor
-```
+![Denied: no attestation for this digest](artifacts/lab-D/screenshots/05-binauthz-attempt2-unattested.png)
 
-**Sign it:**
+**Sign the digest, then Attempt 3:**
 
 ```bash
 gcloud beta container binauthz attestations sign-and-create \
-  --project=$PROJECT_ID \
-  --artifact-url="$IMAGE_BY_DIGEST" \
-  --attestor=advk8s-attestor \
-  --attestor-project=$PROJECT_ID \
-  --keyversion-project=$PROJECT_ID \
-  --keyversion-location=us-central1 \
-  --keyversion-keyring=advk8s-binauthz-keyring \
-  --keyversion-key=advk8s-attestor-key \
-  --keyversion=1
-```
+  --project=$PROJECT_ID --artifact-url="$IMAGE_BY_DIGEST" \
+  --attestor=advk8s-attestor --attestor-project=$PROJECT_ID \
+  --keyversion-project=$PROJECT_ID --keyversion-location=us-central1 \
+  --keyversion-keyring=advk8s-binauthz-keyring --keyversion-key=advk8s-attestor-key --keyversion=1
 
-**Attempt 3 — same digest, now attested:**
-
-```bash
 kubectl run binauthz-test --image="$IMAGE_BY_DIGEST" --restart=Never
 kubectl get pod binauthz-test
 ```
 
-![Signed image: admitted, Running](screenshots/lab-D/06-binauthz-attempt3-signed-running.png)
+**What you should see:** the same digest that was denied twice is now **admitted and `Running`**.
 
-**Verified result:**
+![Signed image admitted and Running](artifacts/lab-D/screenshots/06-binauthz-attempt3-signed-running.png)
 
-```
-pod/binauthz-test created
-NAME            READY   STATUS    RESTARTS   AGE
-binauthz-test   1/1     Running   0          9s
-```
-
-Full evidence, including all three attempts verbatim: [`evidence/lab-D-binary-authorization.txt`](evidence/lab-D-binary-authorization.txt).
+**What this means:** admission is bound to an **immutable digest with a valid signature** — never a tag (which could point at different content tomorrow) and never an unsigned image. Sign in CI only after your scans pass, and only vetted images ever reach the cluster.
 
 ---
 
-## Lab summary
-
-| | Verified |
-|---|---|
-| Bound-KSA Pod resolves to the GSA identity and can access granted resources | ✅ |
-| Unbound Pod gets no usable identity, access denied (403) | ✅ |
-| Unattested image, deny by digest requirement | ✅ |
-| Unattested image, deny by missing attestation | ✅ |
-| Signed image, admitted and running | ✅ |
-
-## Clean up
+## Step 5 — Clean up
 
 ```bash
 kubectl delete pod wi-test wi-test-unbound binauthz-test 2>/dev/null
@@ -407,11 +299,24 @@ gcloud artifacts repositories delete advk8s-images --location=us-central1 --proj
 gcloud container clusters delete advk8s-security --zone us-central1-a --project=$PROJECT_ID --quiet
 ```
 
-KMS key *versions* can be scheduled for destruction (a 24-hour minimum pending-deletion window) but the keyring itself cannot be deleted — this is a deliberate, permanent GCP behavior, not a bug. An empty keyring costs nothing to leave behind.
+(A KMS key *version* can be scheduled for destruction, but the keyring itself can't be deleted — that's deliberate GCP behaviour. An empty keyring costs nothing.)
+
+---
+
+## What you learned
+
+| You saw… | in Step | proof |
+|---|---|---|
+| A bound KSA Pod acts as its GSA and can access granted resources | 2 | resolves to `wi-demo-gsa@…`, reads the bucket |
+| An unbound Pod gets no usable identity | 2 | placeholder `svc.id.goog`, 403 denied |
+| Binary Authorization rejects tag references | 4 | `Expected digest with sha256 scheme` |
+| It rejects unsigned images | 4 | `No attestations found … trusted by the attestor` |
+| A signed digest is admitted and runs | 4 | `binauthz-test 1/1 Running` |
 
 ## Evidence
 
-- Screenshots: [`screenshots/lab-D/`](screenshots/lab-D/) (6 images)
-- Logs: [`evidence/lab-D-workload-identity-federation.txt`](evidence/lab-D-workload-identity-federation.txt), [`evidence/lab-D-binary-authorization.txt`](evidence/lab-D-binary-authorization.txt)
+Real screenshots for this lab are in [`artifacts/lab-D/screenshots/`](artifacts/lab-D/screenshots/) (6 images), and command transcripts are in [`artifacts/lab-D/evidence/`](artifacts/lab-D/evidence/).
 
-**Next:** [Lab 9 — Implementing supply chain and runtime security controls (Falco)](lab-E-falco-runtime-security.md), or continue to Lab 11 if you're doing the cloud-dependent labs back to back.
+---
+
+**Next:** [Lab 17 — Guardrailed Agentic Kubernetes](lab-17-agentic-guardrails.md)

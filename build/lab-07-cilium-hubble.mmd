@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph POD["client Pod"]
+        LBL["labels: run=client<br/>(+role=frontend after fix)"]
+    end
+    subgraph CIL["Cilium eBPF datapath"]
+        POLICY["CiliumNetworkPolicy:<br/>backend allows ingress<br/>only from role=frontend"]
+        VERDICT{"is the client's identity<br/>allowed to reach backend?"}
+    end
+    HUBBLE["Hubble flow log"]
+    LBL -->|"derives identity"| VERDICT
+    POLICY --> VERDICT
+    VERDICT -->|"no — run=client only"| DROP["DROPPED: Policy denied"]
+    VERDICT -->|"yes — role=frontend"| FWD["FORWARDED"]
+    DROP --> HUBBLE
+    FWD --> HUBBLE

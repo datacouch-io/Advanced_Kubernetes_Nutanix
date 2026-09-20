@@ -1,0 +1,14 @@
+flowchart TB
+    METRICS["metrics-server"] --> HPAC["HPA controller"]
+    METRICS --> VPAR["VPA recommender"]
+    subgraph HPA_FLOW["HPA: php-apache (out)"]
+        HPAC -->|"CPU over target"| SCALEUP["scaleUp: no window,<br/>double every 15s"]
+        HPAC -->|"CPU under target"| SCALEDOWN["scaleDown: 60s window,<br/>halve every 30s"]
+        SCALEUP --> REPLICAS["replicas 1 → 6 → 1"]
+        SCALEDOWN --> REPLICAS
+    end
+    subgraph VPA_FLOW["VPA: vpa-demo (up)"]
+        VPAR -->|"target cpu=247m mem=250Mi"| VPAU["updater: InPlaceOrRecreate"]
+        VPAU -->|"/resize subresource"| POD["same Pod, RESTARTS: 0"]
+    end
+    HPA_FLOW -.->|"don't target the same metric on one workload"| VPA_FLOW

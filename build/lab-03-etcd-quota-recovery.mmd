@@ -1,0 +1,8 @@
+flowchart TB
+    WRITE["writes: kubectl create,<br/>controllers, events, leases"] --> DB["etcd boltdb file<br/>grows with every revision"]
+    DB --> CHECK{"DB size &gt;= quota-backend-bytes?"}
+    CHECK -->|"no"| OK["writes accepted"]
+    CHECK -->|"yes"| ALARM["raise NOSPACE alarm"]
+    ALARM --> RO["cluster READ-ONLY<br/>every write: 'database space exceeded'<br/>reads still succeed"]
+    RO --> RECOVER["compact history<br/>defrag (reclaim pages)<br/>alarm disarm"]
+    RECOVER --> OK

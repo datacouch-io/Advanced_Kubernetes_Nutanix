@@ -1,0 +1,52 @@
+# Lab 16 — Inference Autoscaling Signals — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 15:13:09 IST 2026
+
+=== app.py (the simulated single-worker inference server) ===
+import asyncio, time, os
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+app = FastAPI()
+WORKER = asyncio.Semaphore(1)          # one accelerator: serializes generation
+inflight = 0
+peak = 0
+@app.get("/infer")
+async def infer():
+    global inflight, peak
+    inflight += 1
+    if inflight > peak: peak = inflight
+    t0 = time.time()
+    async with WORKER:                  # requests beyond 1 queue here
+        await asyncio.sleep(0.4)        # simulate token generation on the accelerator
+    inflight -= 1
+    return JSONResponse({"pod": os.environ.get("HOSTNAME","?"), "ttft_s": round(time.time()-t0,3)})
+@app.get("/stats")
+async def stats():
+    return {"pod": os.environ.get("HOSTNAME","?"), "peak_queue_depth": peak, "inflight": inflight}
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+=== load.py (concurrent load client, reports TTFT percentiles) ===
+import sys, time, urllib.request, concurrent.futures
+URL="http://llm/infer"; N=int(sys.argv[1]); C=int(sys.argv[2])
+def one(_):
+    t0=time.time()
+    try: urllib.request.urlopen(URL, timeout=120).read()
+    except Exception: return None
+    return time.time()-t0
+with concurrent.futures.ThreadPoolExecutor(max_workers=C) as ex:
+    lat=[x for x in ex.map(one, range(N)) if x is not None]
+lat.sort()
+pct=lambda p: lat[min(len(lat)-1,int(len(lat)*p/100))]
+print(f"requests={len(lat)}  concurrency={C}")
+print(f"TTFT p50={pct(50):.2f}s   p95={pct(95):.2f}s   max={max(lat):.2f}s")
+
+=== 1 replica, 200 req @ concurrency 20 ===
+requests=200  concurrency=20
+TTFT p50=8.04s   p95=8.04s   max=8.04s
+peak_queue_depth=20 (single replica)
+
+=== 4 replicas, same load ===
+requests=200  concurrency=20
+TTFT p50=1.61s   p95=4.82s   max=5.62s
+peak_queue_depth per replica: 14, 12, 5, 8 (spread; none saw the full 20)

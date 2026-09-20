@@ -1,16 +1,47 @@
-# Lab 3 — etcd Quota Alarm & Recovery
+# Lab 3 — Recover a Cluster That's Gone Read-Only (etcd Quota & Recovery)
 
 **Day 1 · How Kubernetes Really Works**
 
-> Every command below was actually run on a real, dedicated `kind` cluster (Kubernetes **v1.37.0**, etcd **v3.7.0**) that we deliberately drove into a read-only state and then recovered. The standout moment: after filling etcd past its quota, `kubectl create configmap` fails cluster-wide with `etcdserver: mvcc: database space exceeded` — the whole cluster is read-only — and a three-command sequence (`compact` → `defrag` → `alarm disarm`) brings it back to accepting writes.
+> ✅ **Tested end-to-end** on a real, dedicated `kind` cluster (Kubernetes v1.37.0, etcd v3.7.0) that we deliberately drove into a read-only state and then recovered. Every screenshot is a real capture. The moment you'll reproduce: after filling etcd past its quota, `kubectl create` fails **cluster-wide** with `database space exceeded` — and a three-command runbook brings it back.
 
 ## What you'll learn
 
-- What etcd's `--quota-backend-bytes` actually does, and what happens the instant the backend database crosses it: a **NOSPACE alarm** and a **cluster-wide read-only** state.
-- How to see the failure from both sides — the etcd alarm (`etcdctl alarm list`) and the symptom every user hits (`database space exceeded` on any write).
-- Why *reads keep working* while *all writes fail*, and why that's the single most confusing production incident etcd throws at you.
-- The real recovery runbook: **compact** history, **defragment** to reclaim physical space, then **disarm** the alarm — and why you need all three, in that order.
-- Why deleting the offending data alone doesn't help until you compact and defrag.
+- What etcd's `--quota-backend-bytes` does, and what happens the instant the database crosses it: a **NOSPACE alarm** and a **cluster-wide read-only** state.
+- How to see the failure from both sides — the etcd alarm *and* the `database space exceeded` error every user hits.
+- Why **reads keep working while all writes fail** — the single most confusing etcd incident in production.
+- The real recovery runbook — **compact → defrag → disarm** — and why you need all three, in that order.
+- Why deleting the offending data alone doesn't give the space back until you compact and defrag.
+
+## What you'll do
+
+You'll build a throwaway cluster, shrink etcd's quota so you can fill it quickly, then create ConfigMaps until etcd goes read-only. You'll confirm the whole cluster is stuck (writes fail, reads work), then run the recovery runbook to bring it back and reclaim the space.
+
+## Time & cost
+
+- **Time:** ~40 minutes.
+- **Cost:** **$0** — runs on a local `kind` cluster.
+
+---
+
+## Before you start
+
+- **Where you'll work:** in a **terminal** on your own machine.
+- **Tools you need:** `docker`, `kind`, `kubectl`.
+- **⚠️ This lab uses its own dedicated, throwaway cluster** — *not* the Day-1 shared one. You're going to deliberately corrupt etcd into a read-only state, and you never practise that on a cluster you care about. You'll create an `etcd-lab` cluster and delete it at the end.
+
+> **Nutanix note — and why this one is `kind`.** etcd, its quota, the NOSPACE alarm, and the compact/defrag/disarm runbook are identical everywhere — etcd is etcd. What differs is *access*: on a managed platform (NKE, GKE, EKS, AKS) you **don't** edit etcd's static-pod manifest yourself — the platform sets the quota, and you'd use its etcd-maintenance tooling or a support case to compact/defrag. We use `kind` precisely because it gives you full control-plane access, so you can *practise* the recovery and recognise it instantly when it happens on NKE.
+
+---
+
+## The idea in 60 seconds
+
+etcd stores every Kubernetes object, and it keeps a **history of revisions**, not just the latest value — so it grows with every write, every controller update, every Event and Lease renewal. To stop a runaway from filling the disk, etcd enforces `--quota-backend-bytes`. When the database file crosses that size, etcd does something drastic on purpose: it raises a **NOSPACE alarm** and **refuses all writes**, cluster-wide. Reads still work. It would rather go read-only than corrupt itself by running out of disk.
+
+Recovery is always the same three steps, and you need all three:
+
+1. **`compact`** — discard old revisions from the history (frees space *logically* inside the file).
+2. **`defrag`** — actually shrink the file to return the freed pages (compaction alone doesn't shrink it).
+3. **`alarm disarm`** — the alarm does **not** clear itself; you must explicitly disarm it before writes resume.
 
 ```mermaid
 flowchart TB
@@ -23,42 +54,19 @@ flowchart TB
     RECOVER --> OK
 ```
 
-## Time & cost
-
-- **Time:** ~40 minutes.
-- **Cost:** $0. Runs on a local `kind` cluster.
-
-## Prerequisites
-
-Complete the [Setup Environment Guide](00-setup-environment-guide.md). This lab needs `docker`, `kind`, and `kubectl`.
-
-> **This lab uses its own dedicated cluster, not the Day-1 shared one.** We are intentionally corrupting etcd into a read-only state. You never practice etcd quota recovery on a cluster you care about — so we build a throwaway `etcd-lab` cluster and delete it at the end.
-
-> **Nutanix note.** etcd, its quota, the NOSPACE alarm, and the compact/defrag/disarm runbook are identical on NKE, GKE, EKS, AKS, and `kind` — etcd is etcd. The one thing that differs on a managed platform is *access*: on NKE (and other managed control planes) you typically don't edit the etcd static-pod manifest yourself — the platform sets `--quota-backend-bytes` and you'd raise a support case or use the platform's etcd-maintenance tooling to compact/defrag. Here on `kind` we have full control-plane access, which is exactly why `kind` is the right place to *practise* the recovery so you recognise it in production.
-
 ---
 
-## 3.1 What the quota does, and what "read-only" means
+## Step 1 — Build a throwaway cluster and shrink etcd's quota
 
-etcd stores every Kubernetes object, and it keeps a **history of revisions**, not just the current value. That history grows continuously — every write, every controller update, every Event and Lease renewal adds a revision. To stop a runaway from filling the disk, etcd enforces `--quota-backend-bytes`. When the backend database file crosses that size, etcd does something drastic and deliberate: it raises a **NOSPACE alarm** and **refuses all writes** across the entire cluster. Reads still work. This is a safety valve — etcd would rather go read-only than corrupt itself by running out of disk.
+**Goal:** stand up a dedicated cluster and lower etcd's quota to 16 MiB so you can fill it in minutes instead of hours.
 
-The default quota is ~2 GiB, which is far too large to fill in a lab, so the first thing we do is lower it to 16 MiB. Then we fill it, watch the cluster go read-only, and recover it.
-
-Recovery is always the same three steps, and you need all three:
-
-1. **`compact`** — discard old revisions from the history. This makes space *logically* free inside the DB file…
-2. **`defrag`** — …but the file doesn't shrink until you defragment it, which rewrites the boltdb file and returns the freed pages.
-3. **`alarm disarm`** — the NOSPACE alarm does **not** clear itself even after the DB shrinks; you must explicitly disarm it before writes are allowed again.
-
----
-
-## 3.2 Create a dedicated cluster and lower the quota
+**1. Create the cluster:**
 
 ```bash
 kind create cluster --name etcd-lab --wait 120s
 ```
 
-etcd runs as a static Pod on the control-plane node. Lower its quota by adding a flag to the static-pod manifest on that node — the kubelet will restart etcd automatically:
+**2. Lower the quota.** etcd runs as a static Pod on the control-plane node; add a flag to its manifest and the kubelet restarts etcd automatically:
 
 ```bash
 docker exec etcd-lab-control-plane \
@@ -66,7 +74,7 @@ docker exec etcd-lab-control-plane \
   /etc/kubernetes/manifests/etcd.yaml
 ```
 
-Set up a small helper so the long `etcdctl` invocation (with all its TLS flags) is one word, then confirm the new quota took effect:
+**3. Set up a one-word helper** for the long `etcdctl` command (with all its TLS flags), then check the new quota took effect:
 
 ```bash
 e() {
@@ -80,17 +88,21 @@ e() {
 e endpoint status -w fields | grep -E '"DBSize"|"DBSizeInUse"|"DBSizeQuota"'
 ```
 
-(The full `-w table` output is 17 columns wide; we grep the `-w fields` form for just the sizes so it's readable.)
+*(We grep the `-w fields` output because the full `-w table` is 17 columns wide and unreadable.)*
 
-![etcd restarted with a 16 MiB quota](screenshots/lab-03/01-quota-lowered.png)
+**What you should see:** `DBSizeQuota` now reads **16777216** (16 MiB), with `DBSize` only ~0.5–2 MB — so there's ~15 MB of headroom to fill.
 
-**Verified result:** `DBSizeQuota` now reads **16777216** (16 MiB), against a `DBSize` of ~0.5–2 MB. There's ~15 MB of headroom to fill. Confirm the flag is present in the manifest too — `--quota-backend-bytes=16777216` — which is what the kubelet restarted etcd with.
+![etcd restarted with a 16 MiB quota](artifacts/lab-03/screenshots/01-quota-lowered.png)
+
+**What this means:** you've turned a 2 GiB safety valve into a 16 MiB one, so the rest of the lab runs in minutes. Everything else about etcd's behaviour is unchanged.
 
 ---
 
-## 3.3 Fill etcd until it goes read-only
+## Step 2 — Fill etcd until it goes read-only
 
-Create ~1 MB ConfigMaps in a loop until a write is refused:
+**Goal:** create ~1 MB ConfigMaps in a loop until etcd refuses a write.
+
+**1. Make a 1 MB blob and create ConfigMaps until one fails:**
 
 ```bash
 head -c 900000 /dev/zero | tr '\0' 'a' > /tmp/blob.txt
@@ -102,21 +114,22 @@ for i in $(seq 1 40); do
 done
 ```
 
-![The fill loop fails when the quota is crossed](screenshots/lab-03/02-nospace-triggered.png)
-
-**Verified result:** the loop creates a dozen ConfigMaps successfully and then, in our run at **#14**, the write is rejected:
-
+**What you should see:** a dozen ConfigMaps get created, then one fails — in our run at **#14**:
 ```
 error: failed to create configmap: etcdserver: mvcc: database space exceeded
 ```
 
-(The exact number varies by a ConfigMap or two run to run, depending on how much other churn etcd absorbed in the meantime.) etcd has crossed the 16 MiB quota and raised its alarm.
+![The fill loop fails when the quota is crossed](artifacts/lab-03/screenshots/02-nospace-triggered.png)
+
+**What this means:** the database crossed 16 MiB and etcd raised its NOSPACE alarm. (The exact number where it fails varies by a ConfigMap or two, depending on other cluster churn.) From this instant, etcd is read-only.
 
 ---
 
-## 3.4 Confirm the cluster is read-only
+## Step 3 — Confirm the *whole cluster* is read-only
 
-This is the part that makes the incident so disorienting in production: it's not just *your* namespace, and reads look completely healthy.
+**Goal:** see the failure from both sides — the etcd alarm, and the error any user gets — and confirm reads still work.
+
+**1. Check the alarm, try a write in an unrelated namespace, try a read, and look at the sizes:**
 
 ```bash
 e alarm list                                          # the etcd side
@@ -125,22 +138,25 @@ kubectl get ns                                        # reads still work
 e endpoint status -w fields | grep -E 'DBSize|Quota'
 ```
 
-![NOSPACE alarm, writes blocked, reads fine](screenshots/lab-03/03-cluster-read-only.png)
+**What you should see:**
+- `e alarm list` → `memberID:… alarm:NOSPACE`
+- the `canary` write (a different namespace!) fails with the same `database space exceeded`
+- `kubectl get ns` returns instantly — reads are fine
+- `DBSize` ≈ 17 MB, having met `DBSizeQuota` = 16.8 MB
 
-**Verified result:**
+![NOSPACE alarm, writes blocked, reads fine](artifacts/lab-03/screenshots/03-cluster-read-only.png)
 
-- `e alarm list` → `memberID:... alarm:NOSPACE`.
-- The `canary` write — in a totally unrelated namespace — fails with the same `etcdserver: mvcc: database space exceeded`. The **whole cluster** is read-only.
-- `kubectl get ns` still returns instantly. Reads are unaffected.
-- `DBSize` ≈ 17.3 MB, which has met `DBSizeQuota` = 16.8 MB (16 MiB).
+**What this means:** it's not just your namespace — the entire cluster can't accept writes. New Pods won't create, Deployments won't scale, `kubectl apply` hangs.
 
-> **Tested gotcha — this looks like an outage, not a disk problem.** Because reads work and only writes fail, the first symptoms people report are "I can't create pods," "my Deployment won't scale," "kubectl apply hangs" — with no obvious disk-full error at the node level. The tell is *any* write returning `database space exceeded` and `etcdctl alarm list` showing `NOSPACE`. Check the alarm first; it points straight at the cause.
+> ⚠️ **Gotcha — this looks like an outage, not a disk problem.** Because reads work and only writes fail, people report "I can't create pods" or "apply hangs" with no obvious disk error at the node level. The tell is *any* write returning `database space exceeded` **plus** `etcdctl alarm list` showing `NOSPACE`. Check the alarm first — it points straight at the cause.
 
 ---
 
-## 3.5 Recover: compact → defrag → disarm
+## Step 4 — Recover: compact → defrag → disarm
 
-Get the current revision, then run the three-step runbook:
+**Goal:** run the three-step runbook and watch writes come back.
+
+**1. Get the current revision, then run the runbook:**
 
 ```bash
 REV=$(e endpoint status -w fields | grep '"Revision"' | head -1 | grep -oE '[0-9]+')
@@ -151,22 +167,25 @@ e alarm list                                          # should now be empty
 kubectl create configmap canary --from-literal=a=b    # writes work again
 ```
 
-![Compact, defrag, disarm — writes accepted again](screenshots/lab-03/04-recovery.png)
+**What you should see:**
+- `compacted revision <N>` (e.g. `1998`)
+- `Finished defragmenting etcd member[…]. took ~211ms` — and `DBSize` drops from ~17 MB toward ~14 MB
+- `alarm disarm` prints the alarm it cleared; `alarm list` is now empty
+- `kubectl create configmap canary` → **`configmap/canary created`**
 
-**Verified result:**
+![Compact, defrag, disarm — writes accepted again](artifacts/lab-03/screenshots/04-recovery.png)
 
-- `e compact 1998` → `compacted revision 1998`.
-- `e defrag` → `Finished defragmenting etcd member[https://127.0.0.1:2379]. took 211ms` — `DBSize` drops from ~17 MB to ~14 MB.
-- `e alarm disarm` → prints the alarm it cleared (`alarm:NOSPACE`); `e alarm list` is now empty.
-- `kubectl create configmap canary` → **`configmap/canary created`**. The cluster accepts writes again.
+**What this means:** the cluster is writable again. Compaction dropped the old revision history, defrag returned the freed pages to the filesystem (shrinking the file below the quota), and disarm cleared the latch.
 
-> **Tested gotcha — disarm is not optional, and order matters.** If you `defrag` but forget `alarm disarm`, the DB is small again but writes *still* fail — the alarm latches until you clear it explicitly. And if you `disarm` before you've made real space (compact + defrag), the very next write pushes you back over quota and re-arms the alarm within seconds. Compact, then defrag, then disarm — every time.
+> ⚠️ **Gotcha — disarm is not optional, and order matters.** If you `defrag` but forget `alarm disarm`, the DB is small again yet writes *still* fail — the alarm latches until you clear it. And if you `disarm` before you've actually freed space (compact + defrag), the very next write pushes you back over quota and re-arms it within seconds. **Compact, then defrag, then disarm** — every time.
 
 ---
 
-## 3.6 Reclaim the space the junk is holding
+## Step 5 — Reclaim the space the junk is still holding
 
-The alarm is clear, but those 12 fill ConfigMaps are still *live* keys occupying ~11 MB. Compaction only removes superseded revisions, not current objects — so you have to delete the data, then compact and defrag again to actually return the space:
+**Goal:** the alarm is clear, but your 12+ fill ConfigMaps are still live keys eating ~11 MB. Delete them, then compact + defrag again to actually return the space.
+
+**1. Delete the junk and reclaim:**
 
 ```bash
 kubectl delete namespace fill
@@ -177,38 +196,40 @@ e defrag --command-timeout=30s
 e endpoint status -w fields | grep -E '"DBSize"|DBSizeInUse'
 ```
 
-![Deleting the junk and reclaiming space returns the DB to baseline](screenshots/lab-03/05-reclaim-and-cleanup.png)
+**What you should see:** `DBSize` falls to **~0.5 MB** — back below where you started.
 
-**Verified result:** after deleting the fill namespace and running compact + defrag again, `DBSize` falls to **~0.5 MB** — back below the original baseline. This is the crucial follow-up most runbooks skip: *disarming gets you writing again; deleting + compacting + defragging is what actually gives the space back.*
+![Deleting the junk and reclaiming space returns the DB to baseline](artifacts/lab-03/screenshots/05-reclaim-and-cleanup.png)
+
+**What this means:** this is the follow-up most runbooks skip — *disarming gets you writing again, but deleting + compacting + defragging is what actually gives the disk space back.* Compaction only drops superseded revisions; a live ConfigMap keeps its space until you delete it and defrag.
 
 ---
 
-## 3.7 Clean up
+## Step 6 — Clean up
 
-This was a throwaway cluster; delete it:
+This was a throwaway cluster — delete it:
 
 ```bash
 kind delete cluster --name etcd-lab
 ```
 
-(If you wanted to keep the cluster instead, you'd remove the `--quota-backend-bytes` line from `/etc/kubernetes/manifests/etcd.yaml` to restore the default 2 GiB quota, and the kubelet would restart etcd.)
+*(If you wanted to keep it instead, you'd remove the `--quota-backend-bytes` line from the manifest to restore the default 2 GiB quota, and the kubelet would restart etcd.)*
 
 ---
 
-## Lab summary
+## What you learned
 
-| Claim | Where it's proven |
-|---|---|
-| `--quota-backend-bytes` caps the etcd DB size | 3.2 — quota shown as 17 MB (16 MiB) after the manifest edit |
-| Crossing the quota raises NOSPACE and blocks writes | 3.3 — fill loop fails with `database space exceeded` |
-| The read-only state is cluster-wide; reads still work | 3.4 — `canary` write fails, `alarm:NOSPACE`, `get ns` succeeds |
-| compact → defrag → disarm restores writes | 3.5 — `configmap/canary created` after the runbook |
-| Disarm latches; order matters | 3.5 gotcha |
-| Reclaiming space needs delete + compact + defrag | 3.6 — DBSize back to ~0.5 MB |
+| You saw… | in Step | proof |
+|---|---|---|
+| `--quota-backend-bytes` caps the etcd DB size | 1 | `DBSizeQuota=16777216` after the manifest edit |
+| Crossing the quota raises NOSPACE and blocks writes | 2 | fill loop fails with `database space exceeded` |
+| The read-only state is cluster-wide; reads still work | 3 | `canary` write fails, `alarm:NOSPACE`, `get ns` succeeds |
+| compact → defrag → disarm restores writes | 4 | `configmap/canary created` after the runbook |
+| Disarm latches; order matters | 4 gotcha |
+| Reclaiming space needs delete + compact + defrag | 5 | `DBSize` back to ~0.5 MB |
 
 ## Evidence
 
-Real screenshots for this lab live in [`screenshots/lab-03/`](screenshots/lab-03/) (5 images). Captured terminal output is in [`evidence/lab-03-etcd-quota-recovery.txt`](evidence/lab-03-etcd-quota-recovery.txt).
+Real screenshots for this lab are in [`artifacts/lab-03/screenshots/`](artifacts/lab-03/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt`](artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt).
 
 ---
 

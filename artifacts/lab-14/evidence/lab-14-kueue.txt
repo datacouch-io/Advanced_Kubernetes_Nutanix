@@ -1,0 +1,28 @@
+# Lab 14 — Multi-Tenant Quota Governance with Kueue — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 14:24:46 IST 2026
+
+$ kubectl -n kueue-system get deploy kueue-controller-manager
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+kueue-controller-manager   1/1     1            1           6m55s
+
+=== two tenants, 1 CPU each, shared cohort 'org' ===
+$ kubectl get clusterqueue -o custom-columns=...
+NAME   COHORT   NOMINAL_CPU   USED_CPU   BORROWED   ADMITTED   PENDING
+cq-a   org      1             2          1          1          0
+cq-b   org      1             0          0          0          0
+$ kubectl get localqueue -A
+NAMESPACE   NAME         CLUSTERQUEUE   PENDING WORKLOADS   ADMITTED WORKLOADS
+team-a      team-queue   cq-a           0                   1
+team-b      team-queue   cq-b           0                   0
+
+=== FINAL state: team-a admitted by borrowing 1 CPU from the cohort ===
+$ kubectl get workloads -A
+NAMESPACE   NAME                QUEUE        RESERVED IN   ADMITTED   FINISHED   AGE
+team-a      job-big-job-9cea6   team-queue   cq-a          True                  4m14s
+$ kubectl -n team-a get pods
+NAME            READY   STATUS    RESTARTS   AGE
+big-job-dkldj   1/1     Running   0          103s
+big-job-ngqnw   1/1     Running   0          103s
+
+(Step 3 blocked-state reason, captured live earlier:)
+  couldn't assign flavors to pod set main: insufficient unused quota for cpu in flavor default-flavor, 1 more needed

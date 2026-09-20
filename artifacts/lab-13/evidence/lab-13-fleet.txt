@@ -1,0 +1,34 @@
+# Lab 13 — Fleet Registration & Staged Rollout — command transcript
+# Clusters: kind fleet-mgr / fleet-stg / fleet-prod, Sun Sep 20 14:15:32 IST 2026
+
+$ kind get clusters
+fleet-mgr
+fleet-prod
+fleet-stg
+
+=== Step 3: the registered fleet ===
+$ kubectl --context kind-fleet-mgr -n fleet-local get clusters.fleet.cattle.io
+NAME    BUNDLES-READY   LAST-SEEN              STATUS
+local   1/1             2026-09-20T08:32:16Z   
+$ kubectl --context kind-fleet-mgr -n fleet-default get clusters.fleet.cattle.io -L env
+NAME                   BUNDLES-READY   LAST-SEEN              STATUS   ENV
+cluster-618f69e1136b   2/2             2026-09-20T08:35:05Z            prod
+cluster-bff9412c90ba   2/2             2026-09-20T08:35:24Z            staging
+
+=== Step 4: one GitRepo fanned out to the whole fleet ===
+$ kubectl --context kind-fleet-mgr -n fleet-default get gitrepo podinfo
+NAME      REPO                                      COMMIT                                     BUNDLEDEPLOYMENTS-READY   STATUS
+podinfo   https://github.com/stefanprodan/podinfo   dd507173b7b75b2312a36cabe0de5f09c1ce69c8   2/2                       
+$ kubectl --context kind-fleet-stg  -n fleet-demo get deploy podinfo   # staging
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+podinfo   2/2     2            2           2m8s
+$ kubectl --context kind-fleet-prod -n fleet-demo get deploy podinfo   # prod
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+podinfo   2/2     2            2           9m20s
+
+=== Step 5: drift correction (see screenshot 03) ===
+$ kubectl --context kind-fleet-stg -n fleet-demo delete deploy podinfo   # -> deleted
+$ kubectl --context kind-fleet-stg -n fleet-demo get deploy podinfo      # -> NotFound
+$ kubectl --context kind-fleet-prod -n fleet-demo get deploy podinfo     # -> prod 2/2 (unaffected)
+  ...correctDrift re-applies within seconds...
+$ kubectl --context kind-fleet-stg -n fleet-demo get deploy podinfo      # -> podinfo 2/2 (restored)

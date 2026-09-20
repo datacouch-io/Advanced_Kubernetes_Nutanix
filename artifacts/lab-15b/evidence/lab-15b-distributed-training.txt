@@ -1,0 +1,22 @@
+# Lab 15B — Kueue-Managed Distributed Training — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Kueue v0.19 + Training Operator v1.9.0, Sun Sep 20 15:00:01 IST 2026
+
+=== Kueue manages PyTorchJobs (integration enabled) ===
+  - "kubeflow.org/pytorchjob"
+
+=== Step 3: two jobs submitted, quota=3 CPU (one job's worth) ===
+$ kubectl get clusterqueue cq-train -o custom-columns=... (captured live):
+  cq-train  NOMINAL_CPU 3  USED_CPU 3  ADMITTED 1  PENDING 1
+  train-job-a  Running (3 pods)   |  train-job-b  Suspended (0 pods)
+
+=== Step 4: job-a deleted -> Kueue admitted job-b -> real distributed training ===
+$ kubectl -n ml-team get workloads
+NAME                           QUEUE         RESERVED IN   ADMITTED   FINISHED   AGE
+pytorchjob-train-job-b-1850c   train-queue   cq-train      True                  4m9s
+$ kubectl -n ml-team get pods -l training.kubeflow.org/job-name=train-job-b
+NAME                   READY   STATUS    RESTARTS   AGE
+train-job-b-master-0   1/1     Running   0          2m52s
+train-job-b-worker-0   1/1     Running   0          2m52s
+train-job-b-worker-1   1/1     Running   0          2m52s
+$ kubectl -n ml-team logs train-job-b-master-0 | grep all_reduce
+[rank 0/3] all_reduce result: 3.0 (expected 3)

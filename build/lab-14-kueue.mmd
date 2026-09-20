@@ -1,0 +1,9 @@
+flowchart TB
+    subgraph cohort["cohort: org (2 CPU total)"]
+      CQA["ClusterQueue cq-a<br/>nominal 1 CPU"]
+      CQB["ClusterQueue cq-b<br/>nominal 1 CPU"]
+    end
+    JA["team-a Job: needs 2 CPU"] --> LQA["LocalQueue (team-a)"] --> CQA
+    JB["team-b Job: needs 1 CPU"] --> LQB["LocalQueue (team-b)"] --> CQB
+    CQA -.->|"cq-b idle → borrow 1 CPU"| CQB
+    CQA --> ADM["team-a admitted:<br/>1 own + 1 borrowed"]

@@ -1,0 +1,6 @@
+flowchart TB
+    GIT["Git repo (one commit)"] --> MGR["Fleet manager<br/>GitRepo + targets by label"]
+    MGR -->|"env=staging"| STG["staging cluster<br/>(fleet-agent) → app"]
+    MGR -->|"env=prod"| PRD["prod cluster<br/>(fleet-agent) → app"]
+    STG -.->|"someone deletes the app (drift)"| DRIFT["staging ≠ Git"]
+    DRIFT -->|"correctDrift re-applies"| STG

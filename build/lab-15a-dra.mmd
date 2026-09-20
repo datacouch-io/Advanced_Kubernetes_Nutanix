@@ -1,0 +1,7 @@
+flowchart TB
+    DRV["DRA driver (DaemonSet)"] -->|"publishes devices + attributes"| RS["ResourceSlices<br/>worker: gpu-0 (model, uuid, 80Gi)<br/>worker2: gpu-0 (model, uuid, 80Gi)"]
+    POD["Pod → ResourceClaim<br/>CEL: uuid == &lt;worker2's gpu&gt;"] --> SCHED["scheduler matches claim to a device"]
+    RS --> SCHED
+    SCHED -->|"only worker2 has it"| PLACED["Pod runs on worker2<br/>GPU injected (GPU_DEVICE_0)"]
+    POD2["Pod → ResourceClaim<br/>CEL: model == 'NO-SUCH-GPU'"] --> SCHED2["no device matches"]
+    SCHED2 --> PENDING["Pod stays Pending"]

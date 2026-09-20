@@ -1,0 +1,30 @@
+Lab 9 — Backup & Restore with Velero — captured evidence
+Real GKE cluster advk8s-lab (dcproject-462806). Velero + in-cluster MinIO (S3-compatible). Run 2026-09-20.
+
+=== Step 1  MinIO + Velero ===
+MinIO image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1 (minio dropped the :latest tag)
+bucket 'velero' created via quay.io/minio/mc job
+$ velero install --provider aws --bucket velero --secret-file <minio creds> \
+    --backup-location-config region=minio,s3ForcePathStyle=true,s3Url=http://minio.velero.svc:9000
+$ velero backup-location get
+NAME      PROVIDER   BUCKET   PHASE       DEFAULT
+default   aws        velero   Available   true
+
+=== Step 2  Back up the namespace ===
+$ kubectl create ns shop; deployment web; configmap catalog(featured=widget-9000, price=42.00); svc web
+$ velero backup create shop-backup --include-namespaces shop --wait
+Backup completed with status: Completed
+Total items to be backed up: 16 ; Items backed up: 16
+
+=== Step 3  Delete the namespace ===
+$ kubectl delete namespace shop           -> gone
+$ velero backup get                        -> shop-backup Completed (still in MinIO)
+
+=== Step 4  Restore ===
+$ velero restore create shop-restore --from-backup shop-backup --wait
+Restore completed with status: Completed
+$ kubectl get ns shop                       -> Active
+$ kubectl -n shop get deploy,svc,cm         -> web, web, catalog restored
+$ kubectl -n shop get cm catalog -o jsonpath  -> widget-9000=42.00   (data intact)
+
+Nutanix note: identical with Nutanix Objects — point s3Url at the Nutanix Objects endpoint + its keys.

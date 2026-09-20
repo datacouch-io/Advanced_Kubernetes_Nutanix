@@ -1,0 +1,35 @@
+# Lab 15A — Dynamic Resource Allocation for Accelerators — command transcript
+# Cluster: kind dra-lab (Kubernetes 1.34, DRA GA), Sun Sep 20 14:35:26 IST 2026
+
+$ kubectl api-resources --api-group=resource.k8s.io
+NAME                     SHORTNAMES   APIVERSION           NAMESPACED   KIND
+deviceclasses                         resource.k8s.io/v1   false        DeviceClass
+resourceclaims                        resource.k8s.io/v1   true         ResourceClaim
+resourceclaimtemplates                resource.k8s.io/v1   true         ResourceClaimTemplate
+resourceslices                        resource.k8s.io/v1   false        ResourceSlice
+
+$ kubectl get deviceclasses
+NAME              AGE
+gpu.example.com   5m21s
+$ kubectl get resourceslices -o custom-columns=NODE,DRIVER,DEVICE,MODEL,MEMORY
+NODE              DRIVER            DEVICE   MODEL              MEMORY
+dra-lab-worker    gpu.example.com   gpu-0    LATEST-GPU-MODEL   80Gi
+dra-lab-worker2   gpu.example.com   gpu-0    LATEST-GPU-MODEL   80Gi
+
+=== attribute-based placement ===
+$ kubectl -n dra-demo get pods -o wide
+NAME          READY   STATUS    RESTARTS   AGE     IP           NODE              NOMINATED NODE   READINESS GATES
+pod-match     1/1     Running   0          3m30s   10.244.2.3   dra-lab-worker2   <none>           <none>
+pod-nomatch   0/1     Pending   0          3m30s   <none>       <none>            <none>           <none>
+$ kubectl -n dra-demo get resourceclaims (allocation)
+CLAIM                   ALLOCATED_DEVICE   ON_NODE
+pod-match-gpu-qtw5r     gpu-0              dra-lab-worker2
+pod-nomatch-gpu-fflh5   <none>             <none>
+$ kubectl -n dra-demo logs pod-match | grep GPU_DEVICE
+GPU_DEVICE_0=gpu-0
+GPU_DEVICE_0_SHARING_STRATEGY=TimeSlicing
+GPU_DEVICE_GPU_0_RESOURCE_CLAIM=32f35d58-b98b-4da3-b423-c6411b72280c
+GPU_DEVICE_0_TIMESLICE_INTERVAL=Default
+
+(pod-nomatch Pending reason:)
+  FailedScheduling: 0/3 nodes are available: ... 2 cannot allocate all claims.

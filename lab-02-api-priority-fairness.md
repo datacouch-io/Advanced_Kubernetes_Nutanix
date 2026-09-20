@@ -1,15 +1,51 @@
-# Lab 2 — API Request Lifecycle & Priority and Fairness
+# Lab 2 — Stop One Client From Taking Down the API Server (API Priority & Fairness)
 
 **Day 1 · How Kubernetes Really Works**
 
-> Every command below was actually run on the real 4-node `kind` cluster (Kubernetes **v1.37.0**), and every screenshot is a real `screencapture`. The standout finding: the restricted lane we build for a noisy client is granted just **3 concurrency seats**, versus **49** for `global-default` and **244** for `workload-low` — seats handed out in proportion to each level's shares. A 60-request storm confined to that 3-seat lane loses **17 requests to HTTP 429**, while an admin/"critical" request in another lane stays **200** the entire time.
+> ✅ **Tested end-to-end** on a real 4-node `kind` cluster (Kubernetes v1.37.0). Every screenshot is a real capture. The headline you'll prove yourself: a noisy client confined to a tiny lane loses **17 of 60 requests to HTTP 429**, while a critical request in another lane stays **200** the whole time.
 
 ## What you'll learn
 
-- The path every request takes through `kube-apiserver`: TLS + authentication → **API Priority & Fairness** → authorization (RBAC) → mutating admission → schema validation → validating admission → etcd — and how to watch it live with `kubectl -v=8`.
-- How **API Priority & Fairness (APF)** classifies *every* request into a priority level with its own concurrency seats and queue, so one client can't monopolize the API server and starve the control plane.
-- Reading the APF response headers (`X-Kubernetes-Pf-Flowschema-Uid` / `-Prioritylevel-Uid`) to see exactly which lane a request landed in.
-- Authoring a custom `FlowSchema` + `PriorityLevelConfiguration` to confine a noisy client to a tiny lane, and proving with **real 429s and real metrics** that critical traffic survives its storm.
+- The full path a request takes through `kube-apiserver`: TLS + authentication → **API Priority & Fairness** → authorization (RBAC) → admission → etcd — and how to watch it live.
+- How **API Priority & Fairness (APF)** sorts *every* request into a lane ("priority level") with its own concurrency budget, so one runaway client can't starve everyone else — including the control plane.
+- How to read the APF headers that tell you which lane a request used.
+- How to build your own lane, trap a noisy client in it, and **prove with real 429s and metrics** that critical traffic sails through untouched.
+
+## What you'll do
+
+You'll first watch a single request travel through the API server. Then you'll look at the lanes Kubernetes ships with, build a deliberately tiny lane, trap a "storm" client in it, and hit the API server with 60 simultaneous requests from that client — watching APF reject the overflow while an admin request stays healthy.
+
+## Time & cost
+
+- **Time:** ~45 minutes.
+- **Cost:** **$0** — runs on the local `kind` cluster from Lab 1.
+
+---
+
+## Before you start
+
+- **Where you'll work:** in a **terminal** on your own machine.
+- **Cluster:** this lab **reuses the `advk8s-day1` cluster from [Lab 1](lab-01-reconciliation-tracing.md)**. If you deleted it, recreate it with the `day1-kind.yaml` from Lab 1, Step 1. APF is on by default — nothing to install.
+- **Tools you need:** `kubectl` and `curl`.
+
+> **Nutanix note.** APF is a core `kube-apiserver` feature, on by default on NKE, GKE, EKS, AKS, and `kind` alike. FlowSchemas, priority levels, the seat maths, the metrics — all identical on a real Nutanix (NKE) cluster. The only thing that differs is the *total* number of seats, which scales with the API server's size (bigger on a production control plane than on `kind`).
+
+---
+
+## The idea in 60 seconds
+
+When you run `kubectl get pods`, the request doesn't go straight to storage. It runs a gauntlet inside `kube-apiserver`:
+
+1. **TLS + authentication** — who are you?
+2. **API Priority & Fairness** — which *lane* is this, and is there a free seat? *(the part most people don't know exists)*
+3. **Authorization (RBAC)** — are you allowed?
+4. **Admission** — defaulting, validation, webhooks.
+5. **etcd** — the read/write finally happens.
+
+Step 2 is this lab. Before APF existed, one misbehaving client — a hot LIST loop, a broken operator — could eat the API server's entire request budget and freeze the whole cluster. APF fixes that by sorting every request into a **priority level** with a bounded number of concurrency **seats**. A storm in one lane can't steal seats from another. Two objects define the lanes:
+
+- **`FlowSchema`** — the matcher: "requests from *these* identities go to *this* lane."
+- **`PriorityLevelConfiguration`** — the lane itself: how many seats (its `nominalConcurrencyShares`), and whether an overflow request waits (`Queue`) or is rejected immediately (`Reject`).
 
 ```mermaid
 flowchart TB
@@ -24,71 +60,50 @@ flowchart TB
     ETCD --> RESP["200 + response headers<br/>X-Kubernetes-Pf-*"]
 ```
 
-## Time & cost
-
-- **Time:** ~45 minutes.
-- **Cost:** $0. Runs entirely on a local `kind` cluster.
-
-## Prerequisites
-
-Complete the [Setup Environment Guide](00-setup-environment-guide.md). This lab needs `docker`, `kind`, `kubectl`, and `curl`. It **reuses the `advk8s-day1` cluster from [Lab 1](lab-01-reconciliation-tracing.md)** — if you tore it down, recreate it with the `day1-kind.yaml` from Lab 1 §1.2. APF is enabled by default; nothing to install.
-
-> **Nutanix note.** APF is a core `kube-apiserver` feature and is on by default on NKE, GKE, EKS, AKS, and `kind` alike. Everything here — FlowSchemas, priority levels, the seat maths, the metrics — is identical on a real Nutanix Kubernetes cluster. Only the built-in *number* of total seats differs, because it scales with the API server's `--max-requests-inflight`, which is larger on a production control plane than on `kind`.
-
 ---
 
-## 2.1 What happens to a request, and why APF exists
+## Step 1 — Watch a single request's whole journey
 
-When you run `kubectl get pods`, the request doesn't go straight to etcd. It runs a gauntlet inside `kube-apiserver`:
+**Goal:** see the raw HTTP request and the APF headers the API server stamps on every reply.
 
-1. **TLS + authentication** — who are you (client cert, token, etc.)?
-2. **API Priority & Fairness** — which *lane* does this request belong in, and is there a free seat? (This is the part most people don't know is there.)
-3. **Authorization** — RBAC: are you allowed to do this?
-4. **Mutating admission** + mutating webhooks — defaulting, injection.
-5. **Schema validation** + validating admission webhooks.
-6. **etcd** — the read or write finally happens.
-
-Step 2 is the subject of this lab. Before APF (pre-1.20), a single misbehaving client — a controller stuck in a hot LIST loop, a `kubectl get pods -A --watch` fan-out, a broken operator — could consume all of the API server's in-flight request budget and make the whole cluster unresponsive, including the control plane's own traffic. APF fixes that by **classifying every request into a priority level** and giving each level a bounded number of concurrency *seats* and an optional queue. A storm in one lane cannot steal seats from another.
-
-Two objects define the lanes:
-
-- **`FlowSchema`** — a matcher. "Requests from *these* users/service-accounts/groups doing *these* verbs go to *this* priority level." Evaluated in `matchingPrecedence` order (lower number wins).
-- **`PriorityLevelConfiguration`** — a lane. It has `nominalConcurrencyShares` (its slice of the total seat budget) and a `limitResponse` that is either `Queue` (wait) or `Reject` (immediate 429).
-
----
-
-## 2.2 Watch a single request's whole lifecycle
-
-`kubectl -v=8` prints the raw HTTP exchange, including the APF headers the API server stamps on every response:
+**1. In your terminal, run any command with `-v=8`** (verbose enough to print the HTTP exchange) and filter to the interesting lines:
 
 ```bash
 kubectl get ns -v=8 2>&1 | grep -iE '"Request" verb=|"Response" status=|X-Kubernetes-Pf'
 ```
 
-![A single request with its APF classification headers](screenshots/lab-02/01-request-lifecycle-pf-headers.png)
+**What you should see:** the request line — `"Request" verb="GET" url="https://127.0.0.1.../api/v1/namespaces?limit=500"` — then `"Response" status="200 OK"`, and two headers: `X-Kubernetes-Pf-Flowschema-Uid` and `X-Kubernetes-Pf-Prioritylevel-Uid`.
 
-**Verified result:** you see the structured request line — `"Request" verb="GET" url="https://127.0.0.1.../api/v1/namespaces?limit=500"` — then `"Response" status="200 OK"`, and the two headers that tell you which lane it used: `X-Kubernetes-Pf-Flowschema-Uid` and `X-Kubernetes-Pf-Prioritylevel-Uid`. Every single request the API server serves is classified; these headers are how you find out into what. (In `kubectl` v1.37 the `-v=8` output is structured logging — `verb="GET" url=...` rather than the older `GET https://...` line.)
+![A single request with its APF classification headers](artifacts/lab-02/screenshots/01-request-lifecycle-pf-headers.png)
+
+**What this means:** *every* request the API server serves is classified into a lane, and those two `Pf` (Priority-and-Fairness) headers tell you exactly which FlowSchema matched and which priority level it used. (In `kubectl` v1.37 the `-v=8` output is structured — `verb="GET" url=…` — not the older `GET https://…` line you may see in blog posts.)
 
 ---
 
-## 2.3 The built-in priority landscape
+## Step 2 — Look at the lanes Kubernetes ships with
 
-Kubernetes ships with a full set of FlowSchemas and priority levels out of the box. Look at them in precedence order:
+**Goal:** see the built-in FlowSchemas and priority levels, and notice how the control plane protects its own traffic.
+
+**1. List the FlowSchemas in precedence order, then the priority levels:**
 
 ```bash
 kubectl get flowschemas -o 'custom-columns=NAME:.metadata.name,PRIORITYLEVEL:.spec.priorityLevelConfiguration.name,PRECEDENCE:.spec.matchingPrecedence'
 kubectl get prioritylevelconfigurations -o 'custom-columns=NAME:.metadata.name,TYPE:.spec.type,SHARES:.spec.limited.nominalConcurrencyShares'
 ```
 
-![The built-in FlowSchemas and priority levels](screenshots/lab-02/02-builtin-flowschemas.png)
+**What you should see:** a precedence-ordered list — `exempt` (1) and `probes` (2) at the top, then `system-*` and `kube-controller-manager`/`kube-scheduler` schemas (100–900), and ordinary traffic falling through to `service-accounts` (9000) → `global-default` (9900) → `catch-all` (10000).
 
-**Verified result:** the precedence order tells the story. `exempt` (precedence 1) and `probes` (2) are never throttled — that's how kubelet health probes and leader election always get through. `system-leader-election` (100), `system-nodes` (500), and the `kube-controller-manager` / `kube-scheduler` / `kube-system-service-accounts` schemas (800–900) route the **control plane's own traffic** into protected high-priority lanes. Ordinary users and service accounts fall through to `service-accounts` (9000) → `global-default` (9900) → `catch-all` (10000). The whole design goal is visible right here: the control plane has reserved lanes that no amount of user traffic can starve.
+![The built-in FlowSchemas and priority levels](artifacts/lab-02/screenshots/02-builtin-flowschemas.png)
+
+**What this means:** the design goal is visible right here. `exempt`/`probes` are never throttled (that's how health probes and leader election always get through), and control-plane traffic sits in high-priority reserved lanes. No amount of *user* traffic can starve them, because user traffic lives in the lower-priority lanes at the bottom.
 
 ---
 
-## 2.4 Author a restricted lane for a noisy client
+## Step 3 — Build a tiny lane and trap a noisy client in it
 
-Now build a deliberately tiny lane and route a specific identity into it. Apply a `PriorityLevelConfiguration` with the smallest possible share and a `Reject` response (immediate 429 when full), plus a `FlowSchema` that matches the user `storm-user`:
+**Goal:** create a lane with almost no seats, route a made-up user `storm-user` into it, and see how few seats it actually gets.
+
+**1. Apply a small priority level (`Reject` = overflow gets an instant 429) and a FlowSchema that routes `storm-user` to it:**
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -125,38 +140,47 @@ spec:
           clusterScope: true
           namespaces: ["*"]
 EOF
+```
 
-# storm-user needs read RBAC so its requests are authorized (we want 200/429, not 403):
+**2. Give `storm-user` read permission** (so its requests come back `200`/`429`, not `403`):
+
+```bash
 kubectl create clusterrolebinding storm-user-view --clusterrole=view --user=storm-user
 ```
 
-Confirm the classification, and — the key number — how many seats each lane actually got:
+**3. Confirm the routing, and check how many seats each lane got:**
 
 ```bash
 # impersonate storm-user and read the PriorityLevel header back:
 kubectl get pods -A --as=storm-user -v=8 2>&1 | grep -i 'Prioritylevel-Uid'
 
-# seats assigned to each lane (proportional to shares):
+# seats each lane actually received (proportional to its shares):
 kubectl get --raw /metrics | grep '^apiserver_flowcontrol_nominal_limit_seats' \
   | grep -E 'restricted-storm|global-default|workload-low'
 ```
 
-![Seat allocation: restricted-storm gets 3 vs global-default 49 vs workload-low 244](screenshots/lab-02/03-seats-and-classification.png)
+**What you should see:** `restricted-storm` gets **3 seats**, versus **49** for `global-default` and **244** for `workload-low`.
 
-**Verified result:** `restricted-storm` is granted **3 seats**, against `global-default`'s **49** and `workload-low`'s **244**. Those aren't numbers we chose — APF computes them by dividing the API server's total concurrency budget in proportion to each level's shares (`nominalConcurrencyShares: 1` is as small as it goes). Three seats is a very narrow lane, which is exactly what makes the next step deterministic.
+![Seat allocation: restricted-storm gets 3 vs global-default 49 vs workload-low 244](artifacts/lab-02/screenshots/03-seats-and-classification.png)
+
+**What this means:** you didn't pick "3" — APF computed it by splitting the API server's total concurrency budget in proportion to each lane's shares (and `nominalConcurrencyShares: 1` is as small as it goes). Three seats is a very narrow lane, which makes the next step deterministic: hit it with more than 3 simultaneous requests and the rest *must* be rejected.
 
 ---
 
-## 2.5 Storm it — and watch critical traffic survive
+## Step 4 — Storm it, and watch critical traffic survive
 
-Fire 60 concurrent expensive LISTs as `storm-user`, and one ordinary admin request alongside them. We hit the REST API through `kubectl proxy` with `curl` rather than `kubectl` directly, for a reason called out in the gotcha below.
+**Goal:** fire 60 simultaneous requests as `storm-user` and one admin request alongside, and prove the storm is contained.
+
+We'll hit the REST API through `kubectl proxy` with `curl` rather than plain `kubectl` — the gotcha below explains why.
+
+**1. Run the whole storm as one block:**
 
 ```bash
 kubectl proxy --port=18080 >/tmp/kproxy.log 2>&1 &
 PROXY=$!
 sleep 2
 
-# 60 concurrent LISTs as the noisy client; collect the raw HTTP status of each:
+# 60 simultaneous requests as the noisy client; record each one's HTTP status:
 tmp=$(mktemp -d); pids=()
 for i in $(seq 1 60); do
   curl -s --max-time 20 -o /dev/null -w "%{http_code}\n" \
@@ -167,29 +191,31 @@ done
 wait "${pids[@]}"          # wait ONLY on the curls, not the proxy
 echo "storm status distribution:"; cat "$tmp"/* | sort | uniq -c
 
-# a "critical" admin request in the same window:
+# one "critical" admin request in the same window:
 curl -s --max-time 20 -o /dev/null -w "admin GET /api/v1/namespaces -> %{http_code}\n" \
   "http://127.0.0.1:18080/api/v1/namespaces"
 
-# APF's own tally of what it rejected:
+# APF's own count of what it rejected:
 kubectl get --raw /metrics | grep '^apiserver_flowcontrol_rejected_requests_total' | grep 'restricted-storm'
 
 kill $PROXY; rm -rf "$tmp"
 ```
 
-![The storm is throttled while admin traffic stays 200](screenshots/lab-02/04-storm-throttled.png)
+**What you should see:** of the 60 storm requests, roughly **43 came back `200` and 17 came back `429`**; the **admin request returned `200`**; and the rejection counter for `restricted-storm` is non-zero.
 
-**Verified result:** of the 60 storm requests, **43 returned 200 and 17 returned 429** — APF rejected exactly the overflow that couldn't get one of the 3 seats. The admin request returned **200** in the same window, untouched, because it lives in a different lane. And APF's own counter confirms it: `apiserver_flowcontrol_rejected_requests_total{...,priority_level="restricted-storm",reason="concurrency-limit"}` climbs with every rejected request. *This is the whole point of the lab:* a client hammering the API server is contained to its own lane and cannot starve anyone else.
+![The storm is throttled while admin traffic stays 200](artifacts/lab-02/screenshots/04-storm-throttled.png)
 
-> **Tested gotcha — `kubectl` hides throttling from you.** If you run the storm with `kubectl get pods --as=storm-user` in a loop instead of raw `curl`, you'll see almost no 429s — the requests just get *slow*. That's because the client-go library `kubectl` is built on **retries 429s automatically** with backoff, so a throttled request eventually succeeds and you never see the rejection. To observe what APF is actually doing you have to look at either the **raw HTTP status** (hence `curl`, which doesn't retry) or the **`apiserver_flowcontrol_rejected_requests_total` metric**. This trips people up constantly when they try to test APF and conclude "it's not doing anything."
+**What this means:** APF rejected exactly the overflow that couldn't grab one of the 3 seats — and it did so *inside the storm's own lane*. The admin request, in a different lane, never noticed. That's the whole point: a client hammering the API server is boxed into its lane and cannot starve anyone else. (Your exact split will vary by a few requests run to run.)
 
-> **A second, smaller gotcha we hit building this:** in the storm script, `wait` with no arguments waits for *every* background job in the shell — including the `kubectl proxy &` you just started, which never exits. The loop appears to hang forever. The fix is in the script above: capture the curl PIDs and `wait "${pids[@]}"` on those specifically.
+> ⚠️ **Gotcha — `kubectl` hides the throttling from you.** If you run the storm with `kubectl get pods --as=storm-user` in a loop instead of raw `curl`, you'll barely see any 429s — the requests just get *slow*. That's because the library `kubectl` is built on **automatically retries 429s** with backoff, so a throttled request eventually succeeds. To actually observe APF you must look at the **raw HTTP status** (hence `curl`) or the **`apiserver_flowcontrol_rejected_requests_total` metric**. This fools people into thinking APF "isn't doing anything."
+
+> ⚠️ **Gotcha — don't let `wait` hang forever.** In the script, a bare `wait` would also wait on the `kubectl proxy &` you started (which never exits), so the loop would appear to hang. That's why we capture the curl PIDs and `wait "${pids[@]}"` on just those.
 
 ---
 
-## 2.6 Clean up
+## Step 5 — Clean up
 
-Remove the custom lane and the RBAC binding. Leave the cluster running for Labs 3–4.
+**Goal:** remove the custom lane so the cluster is back to its default landscape. Leave the cluster running for Labs 3–4.
 
 ```bash
 kubectl delete flowschema storm-user-fs
@@ -197,26 +223,28 @@ kubectl delete prioritylevelconfiguration restricted-storm
 kubectl delete clusterrolebinding storm-user-view
 ```
 
-![Cleanup — custom APF objects removed](screenshots/lab-02/05-cleanup.png)
+**What you should see:** all three objects report `deleted`, and a `kubectl get flowschema storm-user-fs` now returns `NotFound`.
 
-**Verified result:** the custom `FlowSchema` and `PriorityLevelConfiguration` are gone; the built-in ones remain, and the cluster is back to its default priority landscape.
+![Cleanup — custom APF objects removed](artifacts/lab-02/screenshots/05-cleanup.png)
+
+**What this means:** the built-in FlowSchemas and priority levels remain; only your custom lane is gone.
 
 ---
 
-## Lab summary
+## What you learned
 
-| Claim | Where it's proven |
-|---|---|
-| Every request is classified by APF into a priority level | 2.2 — `X-Kubernetes-Pf-*` headers on a `200` response |
-| The control plane has reserved lanes user traffic can't starve | 2.3 — `exempt`/`workload-high` precedence vs `global-default`/`catch-all` |
-| Seats are allocated in proportion to a level's shares | 2.4 — `restricted-storm=3`, `global-default=49`, `workload-low=244` |
-| A confined storm is throttled, not the whole API server | 2.5 — 43×200 / 17×429 for `storm-user`, admin stays `200` |
-| APF records exactly what it rejected | 2.5 — `apiserver_flowcontrol_rejected_requests_total{...reason="concurrency-limit"}` |
-| `kubectl`'s retry masks 429s; raw HTTP / metrics reveal them | 2.5 gotcha |
+| You saw… | in Step | proof |
+|---|---|---|
+| Every request is classified by APF into a lane | 1 | `X-Kubernetes-Pf-*` headers on a `200` |
+| The control plane has reserved lanes user traffic can't starve | 2 | `exempt`/`system-*` precedence vs `global-default`/`catch-all` |
+| Seats are allocated in proportion to a lane's shares | 3 | `restricted-storm=3`, `global-default=49`, `workload-low=244` |
+| A confined storm is throttled, not the whole API server | 4 | ~43×200 / 17×429 for `storm-user`, admin stays `200` |
+| APF records exactly what it rejected | 4 | `apiserver_flowcontrol_rejected_requests_total{…reason="concurrency-limit"}` |
+| `kubectl`'s retry masks 429s; raw HTTP / metrics reveal them | 4 gotcha |
 
 ## Evidence
 
-Real screenshots for this lab live in [`screenshots/lab-02/`](screenshots/lab-02/) (5 images). Captured terminal output is in [`evidence/lab-02-api-priority-fairness.txt`](evidence/lab-02-api-priority-fairness.txt).
+Real screenshots for this lab are in [`artifacts/lab-02/screenshots/`](artifacts/lab-02/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt`](artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt).
 
 ---
 

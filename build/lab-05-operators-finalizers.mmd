@@ -1,0 +1,9 @@
+flowchart TB
+    DEL["kubectl delete X"] --> DT["API server sets<br/>.metadata.deletionTimestamp"]
+    DT --> CHK{"any .metadata.finalizers<br/>left?"}
+    CHK -->|"no"| GONE["object removed from etcd"]
+    CHK -->|"yes"| WAIT["object stays: Terminating<br/>(still in etcd, deletionTimestamp set)"]
+    WAIT --> CTRL["owning controller/operator runs its<br/>cleanup, then removes its finalizer key"]
+    CTRL --> CHK
+    WAIT -.->|"operator down or gone"| STUCK["stuck in Terminating forever"]
+    STUCK -.->|"manual override:<br/>patch finalizers = null"| GONE

@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph DESIRED["Desired state — what you asked for"]
+        SPEC["Deployment .spec<br/>replicas: 3"]
+    end
+    API["kube-apiserver + etcd<br/>the single source of truth"]
+    subgraph CONTROL["kube-controller-manager"]
+        DC["Deployment controller"]
+        RSC["ReplicaSet controller"]
+    end
+    subgraph OBSERVED["Observed state — what actually is"]
+        PODS["Running Pods<br/>.status.replicas / readyReplicas"]
+    end
+
+    SPEC --> API
+    API -->|"watch (level-triggered)"| DC
+    DC -->|"owns &amp; sets replicas on"| RSC
+    RSC -->|"create / delete Pods"| PODS
+    PODS -->|"status reported via kubelet"| API
+    API -.->|"compare .spec vs .status<br/>any drift =&gt; act again"| DC

@@ -1,0 +1,31 @@
+Lab C — Image Scanning & Admission Control with Kyverno — captured evidence
+Real GKE cluster advk8s-lab (dcproject-462806), Kyverno 1.19. Run 2026-09-20.
+
+=== Step 1  Trivy scans (out-of-band) ===
+$ trivy image --severity HIGH,CRITICAL nginx:1.16
+nginx:1.16 (debian 10.3)   Total: 166 (HIGH: 127, CRITICAL: 39)
+$ trivy image --severity HIGH,CRITICAL nginx:1.27-alpine
+nginx:1.27-alpine (alpine 3.21.3)   39 vulnerabilities
+
+=== Step 2  Policy 1: disallow :latest (ValidatingPolicy, CEL) ===
+$ kubectl run bad-pod --image=nginx:latest --restart=Never
+Error from server: admission webhook "vpol.validate.kyverno.svc-fail" denied the request:
+Policy disallow-latest-tag failed: Container images must specify an explicit tag, not :latest or no tag at all.
+$ kubectl run good-pod --image=nginx:1.27-alpine --restart=Never
+pod/good-pod created
+
+=== Step 3  Policy 2: require non-root + limits, and the crash trap ===
+$ kubectl apply (bad-pod-2, no securityContext)
+Error ... Policy require-nonroot-and-limits failed: Every container must set securityContext.runAsNonRoot: true.
+$ kubectl apply (good-pod-2: stock nginx, runAsNonRoot:true, runAsUser:101, limits set)  -> ADMITTED
+pod/good-pod-2 created
+$ kubectl get pod good-pod-2
+good-pod-2   0/1   CrashLoopBackOff   1 (11s ago)   13s
+$ kubectl logs good-pod-2
+2026/09/20 ... [emerg] 1#1: mkdir() "/var/cache/nginx/client_temp" failed (13: Permission denied)
+# The spec passed the policy; the stock nginx image still writes to root-owned paths at startup.
+
+=== Step 4  The real fix: an image built to run unprivileged ===
+$ kubectl apply (good-pod-3: nginxinc/nginx-unprivileged:1.27-alpine, same compliant spec)
+$ kubectl get pod good-pod-3
+good-pod-3   1/1   Running   0   12s

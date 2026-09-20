@@ -1,0 +1,27 @@
+Lab 10 — Bare-Metal LoadBalancer with MetalLB — captured evidence
+Real 4-node kind cluster advk8s-day1, MetalLB v0.14.9. Run 2026-09-20.
+
+=== Step 1  LoadBalancer stays <pending> on kind ===
+$ kubectl expose deployment web --port=80 --type=LoadBalancer --name=web-lb
+$ kubectl get svc web-lb
+web-lb   LoadBalancer   ...   EXTERNAL-IP <pending>   (no cloud LB on bare metal / kind)
+
+=== Step 2  MetalLB assigns an IP ===
+$ kubectl apply metallb-native.yaml (v0.14.9); controller + speaker Ready
+$ IPAddressPool kind-pool: 172.19.255.200-172.19.255.250 (from the kind 172.19.0.0/16 subnet) + L2Advertisement
+$ kubectl get svc web-lb   -> EXTERNAL-IP 172.19.255.200
+$ docker exec advk8s-day1-worker3 curl http://172.19.255.200  -> HTTP 200
+
+=== Step 3  Node-failure failover ===
+IP 172.19.255.200 announced from: advk8s-day1-worker   (before: HTTP 200)
+$ docker stop advk8s-day1-worker
+node advk8s-day1-worker -> NotReady
+MetalLB: announcing from node "advk8s-day1-worker2" with protocol "layer2"
+after failover, same IP from worker3: HTTP 200 HTTP 200 HTTP 200
+$ docker start advk8s-day1-worker   (restore)
+
+GOTCHA: brief failover window -- for a few seconds after stop, curl can be HTTP 000 (node still Ready,
+traffic still routed to the dead pod, announcement not yet moved). Recovers once node is NotReady + endpoints pruned.
+
+Nutanix note: on-prem NKE needs MetalLB (or Nutanix LB) for the same reason -- no cloud LB. Point the pool
+at a range on your Nutanix network.

@@ -1,0 +1,38 @@
+# Lab 12 — GitOps Delivery with Flux — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 13:56:48 IST 2026
+
+$ flux version
+flux: v2.9.5
+distribution: flux-v2.9.5
+helm-controller: v1.6.4
+
+$ kubectl -n flux-system get pods
+NAME                                       READY   STATUS    RESTARTS   AGE
+helm-controller-5dddb6f4d9-qpc7k           1/1     Running   0          6m16s
+kustomize-controller-6cfdf5c894-75g8q      1/1     Running   0          6m16s
+notification-controller-6c6fc7d697-mzbmp   1/1     Running   0          6m16s
+source-controller-bdc9b695b-tpkwp          1/1     Running   0          6m15s
+
+=== Step 2: Git source + Kustomization delivered the app ===
+$ flux get sources git
+NAME   	REVISION            	SUSPENDED	READY	MESSAGE                                             
+podinfo	master@sha1:dd507173	False    	True 	stored artifact for revision 'master@sha1:dd507173'	
+$ flux get kustomizations
+NAME   	REVISION            	SUSPENDED	READY	MESSAGE                                
+podinfo	master@sha1:dd507173	False    	True 	Applied revision: master@sha1:dd507173	
+$ kubectl -n podinfo get deploy,svc,hpa
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/podinfo   1/1     1            1           107s
+
+NAME              TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)             AGE
+service/podinfo   ClusterIP   34.118.236.75   <none>        9898/TCP,9999/TCP   5m52s
+
+NAME                                          REFERENCE            TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/podinfo   Deployment/podinfo   cpu: 3%/99%   2         4         2          5m52s
+
+=== Step 3: drift self-healing (already demonstrated in screenshot 02) ===
+$ kubectl -n podinfo delete deploy podinfo   # -> deleted
+$ kubectl -n podinfo get deploy podinfo      # -> Error (NotFound)
+$ flux reconcile kustomization podinfo --with-source
+  applied revision master@sha1:dd507173b7b75b2312a36cabe0de5f09c1ce69c8
+$ kubectl -n podinfo get deploy podinfo      # -> podinfo 1/1 (restored)

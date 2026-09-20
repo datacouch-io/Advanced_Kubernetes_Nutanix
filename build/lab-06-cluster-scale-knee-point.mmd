@@ -1,0 +1,9 @@
+flowchart TB
+    SCALE["scale the Deployment up a step"] --> FIT{"do the new Pods fit in<br/>the nodes' free CPU?"}
+    FIT -->|"yes"| FAST["scheduled &amp; Ready in seconds<br/>flat part of the curve"]
+    FIT -->|"no"| PENDING["Pods Pending: Insufficient cpu<br/>step never converges -- the KNEE"]
+    FAST --> DONE["all Ready"]
+    PENDING --> FIX{"add capacity"}
+    FIX -->|"bigger nodes"| MORE["more allocatable per node"]
+    FIX -->|"more nodes / autoscaler"| MORE
+    MORE --> DONE

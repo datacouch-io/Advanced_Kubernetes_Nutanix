@@ -1,0 +1,16 @@
+flowchart TB
+    POD["new Pod: Pending<br/>PodScheduled=False"] --> SCHED["kube-scheduler, Filter phase"]
+    SCHED --> F1{"fits cpu/memory?"}
+    F1 -->|"no"| R1["Insufficient cpu/memory"]
+    F1 -->|"yes"| F2{"tolerates node taints?"}
+    F2 -->|"no"| R2["untolerated taint"]
+    F2 -->|"yes"| F3{"matches nodeSelector/affinity?"}
+    F3 -->|"no"| R3["node affinity/selector mismatch"]
+    F3 -->|"yes"| F4{"PVCs bound?"}
+    F4 -->|"no"| R4["unbound PersistentVolumeClaims"]
+    F4 -->|"yes"| BIND["Score, then bind to best node"]
+    BIND --> RUN["Pod Running"]
+    R1 -.->|"FailedScheduling"| STUCK["stays Pending"]
+    R2 -.-> STUCK
+    R3 -.-> STUCK
+    R4 -.-> STUCK

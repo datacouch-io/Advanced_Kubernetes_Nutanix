@@ -1,0 +1,10 @@
+flowchart TB
+    CLIENT["kubectl / client<br/>GET /api/v1/pods"] --> TLS["TLS termination<br/>+ AuthN (cert / token)"]
+    TLS --> APF{"API Priority &amp; Fairness<br/>match a FlowSchema"}
+    APF -->|"classify by user / SA / group"| LANE["PriorityLevel<br/>concurrency seats + queue"]
+    LANE -->|"seat available"| AUTHZ["AuthZ (RBAC)"]
+    LANE -.->|"no seat, Reject type"| R429["429 Too Many Requests"]
+    AUTHZ --> MADM["Mutating admission<br/>+ mutating webhooks"]
+    MADM --> VALID["Schema validation<br/>+ validating admission"]
+    VALID --> ETCD["etcd read / write"]
+    ETCD --> RESP["200 + response headers<br/>X-Kubernetes-Pf-*"]

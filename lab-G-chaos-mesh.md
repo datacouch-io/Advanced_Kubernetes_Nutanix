@@ -1,62 +1,65 @@
-<!-- provenance-banner -->
-> ♻️ **Reused source — Lab G.** Copied from `datacouch-io/Advanced_Kubernetes` (Lab 16), originally built and tested on **local kind**. **Not yet adapted or re-tested for the Nutanix Kubernetes platform.** Adaptation weight: LIGHT — Chaos Mesh is platform-agnostic. See [`REUSED-FROM-REPO.md`](REUSED-FROM-REPO.md) for the full mapping.
+# Lab G — Break It on Purpose to Prove It's Resilient (Chaos Engineering with Chaos Mesh)
 
-# Lab 16 — Running a Chaos Engineering Experiment with Chaos Mesh
+**Day 5 · Kubernetes as the AI-Native Platform**
 
-**Day 3 · AI/ML & Observability**
-
-> Every command below was actually run end to end against a real local `kind` cluster, and every screenshot is a real `screencapture` of that run — including a real, unplanned outage this experiment triggered that the original lab design didn't anticipate (§16.5).
+> ✅ **Tested end-to-end** on a real `kind` cluster. Every screenshot is a real capture — including a **real, unplanned outage this experiment triggered** that the original design didn't anticipate (Step 4). The payoff: you'll kill a Pod and watch Kubernetes heal it, then inject network latency and discover it can take a Service to **zero healthy endpoints** — a failure mode you'd never find by reading YAML.
 
 ## What you'll learn
 
-- Chaos Mesh over LitmusChaos, and why: this lab uses **Chaos Mesh** specifically (a CNCF project, CRD-native, no separate control-plane UI required to run an experiment) rather than presenting both as interchangeable — the same reasoning [Lab 7](lab-C-image-scanning-admission-control.md) applied picking Kyverno over OPA/Gatekeeper.
-- Running a **PodChaos** experiment (kill a Pod out from under a Deployment) and watching Kubernetes' own self-healing do exactly what it's supposed to.
-- Running a **NetworkChaos** experiment (inject real latency into a Service's traffic) — and, run for real, discovering it does something more dramatic than "add latency": it can silently take a Service to zero healthy endpoints if a readinessProbe's timeout is shorter than the injected delay. That's the actual lesson of this lab, and it's more valuable than the one the original design set out to teach.
-- The actual point of chaos engineering: it's not "break things for fun," it's turning "we assume our timeout/retry config would handle a real failure" into "we watched it handle a real, injected failure" — and sometimes discovering the assumption was wrong in a way you hadn't even thought to check.
+- How **Chaos Mesh** injects real faults (kill a Pod, add network latency) via CRDs and a per-node daemon — and auto-reverts them after a `duration`.
+- How a **PodChaos** kill triggers Kubernetes' own self-healing.
+- How a **NetworkChaos** delay, run for real, surfaces a hidden interaction: a `readinessProbe` timeout shorter than the injected delay knocks *every* replica out of readiness at once — and how the real client latency is roughly **double** the configured delay.
+
+## What you'll do
+
+You'll deploy a 3-replica app, install Chaos Mesh, kill one Pod (and watch it return), then inject 2s of latency on all replicas — watch it cause an outage, diagnose it, fix the probe, and re-measure.
 
 ## Time & cost
 
-- **Time:** ~50 minutes (including diagnosing the real readiness-probe interaction in §16.5 — budget more than the original 40 minutes if you want to reproduce that investigation yourself rather than just reading it).
-- **Cost:** $0. Runs entirely on a local `kind` cluster.
-
-## Prerequisites
-
-Complete the [Setup Environment Guide](00-setup-environment-guide.md). You need `docker`, `kind`, `kubectl`, and `helm` verified working. No dependency on the other Day 3 labs, though if you've done Lab 5 already, §16.5's contrast with Istio's retry policy will land harder.
+- **Time:** ~50 minutes.
+- **Cost:** **$0** — runs entirely on a local `kind` cluster.
 
 ---
 
-## 16.1 Concepts, briefly
+## Before you start
 
-Chaos Mesh installs as a set of CRDs (`PodChaos`, `NetworkChaos`, `IOChaos`, `StressChaos`, and others) plus a controller that watches them and a per-node daemon (`chaos-daemon`) that actually carries out the disruption at the kernel/container-runtime level — killing a process, injecting `tc` (Linux traffic control) rules for latency, mounting a faulty filesystem layer. You describe *what* to break and *which Pods* to break it on via a `selector`, Chaos Mesh does the mechanics.
+- **Where you'll work:** in a **terminal** on your own machine.
+- **Tools you need:** `docker`, `kind`, `kubectl`, `helm`.
+- **Cluster:** you'll create a fresh `kind` cluster in Step 1.
 
-The critical design detail worth understanding before running anything: every experiment has a **duration**, after which Chaos Mesh automatically reverts it. A `NetworkChaos` experiment that injects 2 seconds of latency for a `duration: 60s` window will, on its own, remove that latency at the 60-second mark — you don't have to remember to manually undo it, which matters a lot the first time you run one against something you care about.
+> **Nutanix note.** Chaos Mesh is a CNCF project and platform-agnostic — identical on **NKE**. Chaos engineering matters most where you own the failure domains: on a Nutanix cluster you'd use exactly these experiments to validate that your on-prem apps survive node loss, network partitions, and slow dependencies *before* a real incident proves they don't. This lab is `kind` only because it needs no cloud features.
 
-The other thing worth internalizing up front, confirmed the hard way in §16.5: Chaos Mesh only controls what you tell it to control (the network delay itself). It has no idea your Deployment also has a `readinessProbe`, and no way to know that probe's timeout is shorter than the delay you just injected. That interaction is entirely between the kubelet and your own probe config — chaos engineering's job is to surface it, not prevent it.
+---
+
+## The idea in 60 seconds
+
+Chaos Mesh installs CRDs (`PodChaos`, `NetworkChaos`, `IOChaos`, `StressChaos`…), a controller that watches them, and a per-node `chaos-daemon` that carries out the disruption at the container/kernel level (kill a process, inject `tc netem` latency rules, mount a faulty FS layer). You declare *what* to break and *which Pods* via a selector; Chaos Mesh does the mechanics. Every experiment has a **duration** and auto-reverts when it expires — so it's safe to run against something you care about.
+
+The point isn't breaking things for fun: it's turning "we *assume* our timeout/retry config handles failure" into "we *watched* it handle a real, injected failure" — and sometimes finding the assumption was wrong in a way you never thought to check.
 
 ```mermaid
 flowchart TB
     subgraph CTRL["Chaos Mesh control plane"]
         MGR["chaos-controller-manager"]
     end
-
     subgraph NODE["kind node"]
         DAEMON["chaos-daemon<br/>(DaemonSet)"]
         POD1["resilient-app Pod 1"]
         POD2["resilient-app Pod 2"]
-        DAEMON -.->|"kill -9<br/>(PodChaos)"| POD1
-        DAEMON -.->|"tc netem delay<br/>(NetworkChaos)"| POD2
+        DAEMON -.->|"kill -9 (PodChaos)"| POD1
+        DAEMON -.->|"tc netem delay (NetworkChaos)"| POD2
     end
-
-    PODCHAOS["PodChaos CR<br/>action: pod-kill, duration: 30s"] --> MGR
-    NETCHAOS["NetworkChaos CR<br/>action: delay 2s, duration: 60s"] --> MGR
+    PODCHAOS["PodChaos CR<br/>pod-kill, mode: one"] --> MGR
+    NETCHAOS["NetworkChaos CR<br/>delay 2s, mode: all, 60s"] --> MGR
     MGR --> DAEMON
-
-    POD1 -.->|"Deployment controller<br/>recreates automatically"| POD1B["resilient-app Pod 1' (new)"]
+    POD1 -.->|"Deployment controller recreates"| POD1B["resilient-app Pod 1' (new)"]
 ```
 
 ---
 
-## 16.2 Create the cluster and a resilient target app
+## Step 1 — Create the cluster and a resilient target app
+
+**Goal:** deploy a 3-replica app that *has redundancy to lose*.
 
 ```bash
 kind create cluster --name chaos-lab
@@ -64,40 +67,34 @@ kind create cluster --name chaos-lab
 kubectl apply -f - <<'EOF'
 apiVersion: apps/v1
 kind: Deployment
-metadata:
-  name: resilient-app
+metadata: {name: resilient-app}
 spec:
   replicas: 3
   selector: {matchLabels: {app: resilient-app}}
   template:
-    metadata:
-      labels: {app: resilient-app}
+    metadata: {labels: {app: resilient-app}}
     spec:
       containers:
       - name: app
         image: nginxinc/nginx-unprivileged:1.27-alpine
-        ports:
-        - containerPort: 8080
+        ports: [{containerPort: 8080}]
         readinessProbe:
           httpGet: {path: /, port: 8080}
           periodSeconds: 2
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: resilient-app
-spec:
-  selector: {app: resilient-app}
-  ports:
-  - {port: 80, targetPort: 8080}
 EOF
-
+kubectl expose deployment resilient-app --port=80 --target-port=8080
 kubectl wait --for=condition=Available --timeout=120s deployment/resilient-app
 ```
 
-3 replicas, not 1 — the whole point of this section is watching Kubernetes' self-healing operate on a Deployment that has redundancy to lose in the first place. Note the `readinessProbe` here uses Kubernetes' own default `timeoutSeconds: 1` (it isn't set explicitly) — that default turns out to matter a great deal in §16.5.
+**What you should see:** 3 `resilient-app` Pods, all ready.
 
-## 16.3 Install Chaos Mesh
+**What this means:** 3 replicas (not 1) so self-healing has something to operate on. Note the `readinessProbe` uses Kubernetes' **default `timeoutSeconds: 1`** (not set explicitly) — that default becomes the whole story in Step 4.
+
+---
+
+## Step 2 — Install Chaos Mesh
+
+**Goal:** get the controller and node daemon running.
 
 ```bash
 helm repo add chaos-mesh https://charts.chaos-mesh.org
@@ -105,116 +102,114 @@ helm repo update
 helm install chaos-mesh chaos-mesh/chaos-mesh -n chaos-mesh --create-namespace \
   --set chaosDaemon.runtime=containerd \
   --set chaosDaemon.socketPath=/run/containerd/containerd.sock
-
 kubectl wait --for=condition=Available --timeout=120s -n chaos-mesh deployment/chaos-controller-manager
 kubectl get pods -n chaos-mesh
 ```
 
-![All Chaos Mesh components Running: 3 chaos-controller-manager replicas, chaos-daemon, chaos-dashboard, chaos-dns-server](screenshots/lab-G/01-chaos-mesh-installed.png)
+**What you should see:** every Chaos Mesh component `Running` — `chaos-controller-manager` (3 replicas), a `chaos-daemon` (one per node), `chaos-dashboard`, and `chaos-dns-server`.
 
-**Verified result:** every Chaos Mesh component `Running` — `chaos-controller-manager` (3 replicas), one `chaos-daemon` (one per node; this `kind` cluster has a single node), `chaos-dashboard`, and `chaos-dns-server`. `chaosDaemon.runtime=containerd` matters specifically for `kind`: its nodes run containerd, not Docker's own runtime, and the daemon needs to talk to the correct socket to actually control the right processes.
+![All Chaos Mesh components Running](artifacts/lab-G/screenshots/01-chaos-mesh-installed.png)
 
-## 16.4 PodChaos: kill a Pod, watch it come back
+**What this means:** `chaosDaemon.runtime=containerd` matters for `kind` specifically — its nodes run containerd, and the daemon must talk to the right socket to control the correct processes.
+
+---
+
+## Step 3 — PodChaos: kill a Pod, watch it come back
+
+**Goal:** inject a real Pod kill and watch Kubernetes reconcile.
 
 ```bash
 kubectl get pods -l app=resilient-app
 ```
 
-![Before: three resilient-app Pods, ages 15-17s](screenshots/lab-G/02a-before-podchaos.png)
-
-**Verified result:** three Pods — `resilient-app-856bc89959-7khcn`, `-vd26w`, `-wh55p`.
+![Before: three resilient-app Pods](artifacts/lab-G/screenshots/02a-before-podchaos.png)
 
 ```bash
 kubectl apply -f - <<'EOF'
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
-metadata:
-  name: kill-one-pod
+metadata: {name: kill-one-pod}
 spec:
   action: pod-kill
   mode: one
   selector:
-    labelSelectors:
-      app: resilient-app
+    labelSelectors: {app: resilient-app}
 EOF
-
 kubectl get pods -l app=resilient-app
 ```
 
-![After: -7khcn is gone, replaced by a brand-new -wtt5t; the other two Pods are untouched and simply older](screenshots/lab-G/02b-after-podchaos.png)
+**What you should see:** one Pod (e.g. `-7khcn`) is gone; the other two are the same Pods, just older; and a **brand-new Pod** (e.g. `-wtt5t`) has appeared in its place.
 
-**Verified result:** `-7khcn` is gone. `-vd26w` and `-wh55p` are still the exact same Pods, just older (66-67s vs. their earlier 15-17s). In their place is `resilient-app-856bc89959-wtt5t`, brand new (age 26s at capture) — standard Kubernetes reconciliation, now triggered by a real injected failure instead of `kubectl delete pod`. `mode: one` means "pick exactly one matching Pod," not all three — the difference between a realistic single-instance failure and taking the whole Deployment down at once, which `PodChaos` can also do (`mode: all`, exactly what §16.5's `NetworkChaos` uses, deliberately, for a different reason).
+![After: one pod replaced by a brand-new one; the other two untouched](artifacts/lab-G/screenshots/02b-after-podchaos.png)
 
-`PodChaos` with `action: pod-kill` is a one-shot action (no ongoing `duration` needed) — it fires once and Chaos Mesh's job is done; Kubernetes' own Deployment controller does the actual recovery, with zero help from Chaos Mesh past the initial kill.
+**What this means:** `mode: one` kills exactly one matching Pod (a realistic single-instance failure). The recovery is plain Kubernetes reconciliation — the Deployment controller replaces the killed Pod with **zero help from Chaos Mesh** past the initial kill. `action: pod-kill` is one-shot, so no `duration` is needed.
 
-## 16.5 NetworkChaos: inject real latency — and find a real outage the design didn't expect
+---
+
+## Step 4 — NetworkChaos: inject latency, and find a real outage
+
+**Goal:** inject 2s of latency on *every* replica and observe the client's experience — which turns out to be worse than "slow."
 
 ```bash
 kubectl apply -f - <<'EOF'
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
-metadata:
-  name: add-latency
+metadata: {name: add-latency}
 spec:
   action: delay
   mode: all
   selector:
-    labelSelectors:
-      app: resilient-app
-  delay:
-    latency: "2s"
-    jitter: "200ms"
+    labelSelectors: {app: resilient-app}
+  delay: {latency: "2s", jitter: "200ms"}
   duration: "60s"
 EOF
+kubectl describe pod -l app=resilient-app | grep -A2 Unhealthy
 ```
 
-`mode: all` here, deliberately — this experiment is about the *client's* experience of a slow dependency, which needs every replica affected, not just one (a client with 3 backends and only 1 slow one wouldn't notice, since it'd just get lucky most of the time).
+**What you should see:** instead of "slow but working," the `readinessProbe` starts **failing on all three Pods at once** — `context deadline exceeded` — because a 2-second-delayed probe response can't land inside the default 1-second timeout. The Service's endpoints drop to **zero ready backends** for stretches of the window; a client gets `connection refused`.
 
-The original plan for this section was to measure ~2.0–2.2s of client-visible latency and then show a retry policy beating it. That is not what happened.
+![Real kubectl describe events: repeated Unhealthy readiness-probe failures during the chaos window](artifacts/lab-G/screenshots/03-networkchaos-readiness-cascade.png)
 
-> **Tested gotcha — NetworkChaos didn't just slow the app down, it took it offline.** With `mode: all` injecting 2s (+jitter) of delay on every replica, the Deployment's `readinessProbe` — using Kubernetes' default `timeoutSeconds: 1`, unchanged from §16.2 — started failing on **all three Pods simultaneously**, because a 2-second-delayed probe response can't land inside a 1-second timeout. `kubectl describe pod` showed the real event trail:
->
-> ```
-> Warning  Unhealthy  2m55s              kubelet  spec.containers{app}: Readiness probe failed: Get "http://10.244.0.20:8080/": dial tcp 10.244.0.20:8080: connect: connection refused
-> Warning  Unhealthy  41s (x24 over 86s)  kubelet  spec.containers{app}: Readiness probe failed: Get "http://10.244.0.20:8080/": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
-> ```
->
-> ![Real kubectl describe pod events: repeated Unhealthy readiness-probe failures during the chaos window](screenshots/lab-G/03-networkchaos-readiness-cascade.png)
->
-> Because `mode: all` affected every replica at once, there was no healthy replica left to fall back on — the Service's `Endpoints` object had zero ready backends for stretches of the 60-second window. A real client hitting the Service during one of those windows gets `connection refused`, full stop — not "slow but working," which is what the original design assumed it would measure. This is a materially worse failure than "added latency," and it's exactly the kind of thing chaos engineering is supposed to surface: nobody wrote the `readinessProbe`'s `timeoutSeconds: 1` thinking about network chaos, because almost nobody does, until something like this makes them.
+> ⚠️ **Gotcha — NetworkChaos didn't slow the app down, it took it *offline*.** With `mode: all` delaying every replica and the probe on the default `timeoutSeconds: 1`, all three Pods failed readiness simultaneously — no healthy replica to fall back on. This is materially worse than "added latency," and it's exactly what chaos engineering exists to surface: nobody sets `timeoutSeconds: 1` *thinking* about network chaos, until something like this makes them.
 
-**The fix**, applied live to the real Deployment:
+**The fix — raise the probe timeout above the injected delay, live:**
 
 ```bash
 kubectl patch deployment resilient-app --type=json -p='[
-  {"op": "add", "path": "/spec/template/spec/containers/0/readinessProbe/timeoutSeconds", "value": 5}
+  {"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":5}
 ]'
 kubectl rollout status deployment/resilient-app
 ```
 
-With `timeoutSeconds: 5` — comfortably above the 2s (+200ms jitter) injected delay — re-running the exact same `NetworkChaos` experiment no longer knocks any Pod out of readiness:
+Re-run the same experiment and measure real client latency:
 
 ```bash
-kubectl get pods -l app=resilient-app
-kubectl run curl-test4 --image=curlimages/curl --rm -i --restart=Never -- \
+kubectl apply -f - <<'EOF'
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata: {name: add-latency}
+spec:
+  action: delay
+  mode: all
+  selector: {labelSelectors: {app: resilient-app}}
+  delay: {latency: "2s", jitter: "200ms"}
+  duration: "60s"
+EOF
+kubectl run curl-test --image=curlimages/curl --rm -i --restart=Never -- \
   curl -s -o /dev/null -w "Total time: %{time_total}s\n" http://resilient-app.default.svc --max-time 10
 ```
 
-![All three Pods still 1/1 Running under the same NetworkChaos experiment, plus the real measured latency: 4.245682s](screenshots/lab-G/04-networkchaos-latency-measured.png)
+**What you should see:** all three Pods stay `1/1 Running` under the same chaos (the probe fix worked), and the measured latency is **~4.2s** — nearly double the configured 2s.
 
-**Verified result:** all three Pods stayed `1/1 Running` throughout — the probe fix worked, this time chaos actually looks like "added latency" rather than "outage." But the measured number is `Total time: 4.245682s` (confirmed again moments earlier at `3.96s` on a separate run) — nearly double the ~2.0–2.2s the original design expected.
+![All three pods stay Running; measured latency 4.245682s](artifacts/lab-G/screenshots/04-networkchaos-latency-measured.png)
 
-> **Tested gotcha — the real latency was ~4s, not ~2s.** `NetworkChaos`'s `delay` action works by injecting `tc netem delay` rules (Linux traffic control) on the target Pod's network namespace, and `tc netem delay` applies **per packet**, not per logical request. A single HTTP request over a fresh connection incurs the injected delay on the TCP handshake *and separately* on the HTTP request/response exchange — two delayed round trips stacked instead of one, which is why ~2s of configured latency shows up as ~4s of observed client latency. The YAML says `latency: "2s"`; the client experience is roughly double that. This is worth knowing before you set a `perTryTimeout` or SLO budget against a chaos-injected number without accounting for it.
+> ⚠️ **Gotcha — the real latency was ~4s, not ~2s.** `tc netem delay` applies **per packet**, not per request. One HTTP request over a fresh connection eats the delay on the TCP handshake *and again* on the request/response — two delayed round trips, so ~2s configured shows as ~4s observed. Size any `perTryTimeout` or SLO budget against the *measured* ~4s, not the YAML's 2s.
 
-This is the part that actually matters for tying back to Lab 5: a retry policy with a `perTryTimeout` shorter than this real, measured (~4s) delay, and enough attempts to reach a replica outside its jittered delay window, is the kind of config decision this experiment makes provable instead of theoretical — the same distinction Lab 5 drew between fault-injection theater and a retry policy validated against a real, injected failure. The number to design that timeout against, per this run, is ~4s, not the ~2s the YAML alone would suggest.
+**What this means:** chaos engineering turned two theoretical assumptions ("our probe is fine", "2s delay = 2s latency") into two proven, surprising facts. That's the entire value: making resilience config *provable* instead of assumed.
 
-Confirm the experiment auto-reverts at the end of its `duration` without any manual cleanup — this part of the CRD's behavior (a time-boxed disruption reverting itself) is what makes it safe to run against something you actually care about, and is exactly the property that let us re-run this experiment twice above without any manual `kubectl delete networkchaos` in between:
+---
 
-```bash
-kubectl delete networkchaos add-latency --ignore-not-found
-```
-
-## 16.6 Clean up
+## Step 5 — Clean up
 
 ```bash
 kubectl delete podchaos kill-one-pod --ignore-not-found
@@ -222,20 +217,23 @@ kubectl delete networkchaos add-latency --ignore-not-found
 kind delete cluster --name chaos-lab
 ```
 
+(Experiments also auto-revert at the end of their `duration` — no manual cleanup needed mid-experiment.)
+
 ---
 
-## Lab summary
+## What you learned
 
-| | Result |
-|---|---|
-| `PodChaos` kills a real Pod (`-7khcn`); Deployment controller replaces it automatically (`-wtt5t`) | §16.4 — verified |
-| `NetworkChaos` with `mode: all` + default `readinessProbe` timeout took the Service to zero ready endpoints, not just "slow" | §16.5 — verified, and the lab's real headline finding |
-| Raising `readinessProbe.timeoutSeconds` above the injected delay restores normal operation under the same chaos | §16.5 — verified |
-| Real measured latency (~4s) is roughly double the naive delay value (2s), because `tc netem` applies per packet | §16.5 — verified |
-| Experiments auto-revert at the end of their `duration`, no manual cleanup needed mid-experiment | §16.1, §16.5 |
+| You saw… | in Step | proof |
+|---|---|---|
+| PodChaos kills a real Pod; the Deployment controller replaces it | 3 | `-7khcn` gone, `-wtt5t` new; other two untouched |
+| NetworkChaos + a too-short probe timeout took the Service to zero endpoints | 4 | all pods `Unhealthy`, `context deadline exceeded` |
+| Raising `readinessProbe.timeoutSeconds` restores service under the same chaos | 4 | all 3 Pods stay `1/1 Running` |
+| `tc netem` latency is per-packet: ~2s configured → ~4s observed | 4 | `Total time: 4.245682s` |
 
 ## Evidence
 
-- Screenshots: [`screenshots/lab-G/`](screenshots/lab-G/) (5 images)
+Real screenshots for this lab are in [`artifacts/lab-G/screenshots/`](artifacts/lab-G/screenshots/) (5 images).
 
-**This is the end of Day 3, and of the course.** Across all sixteen labs: multi-cluster provisioning and fleet management, service mesh traffic control and security, supply-chain and runtime security, both autoscaling directions plus GPU node scaling, and now distributed training, accelerator-backed inference, and observability/resilience — the full path from "a single cluster" to "Kubernetes at scale in production," each claim backed by a real command run against real infrastructure wherever that was feasible, and clearly labeled where it wasn't yet.
+---
+
+**Next:** [Lab 17 — Guardrailed Agentic Kubernetes](lab-17-agentic-guardrails.md)
