@@ -1,0 +1,17 @@
+flowchart TB
+    LOAD["burst: 20 concurrent requests"] --> SVC["Service: llm"]
+    subgraph ONE["1 replica"]
+        W1["worker (1 gen at a time)"]
+        Q1["queue: up to 20 deep<br/>TTFT ~8s"]
+        Q1 --> W1
+    end
+    subgraph FOUR["4 replicas (after scale-out)"]
+        WA["worker"]
+        WB["worker"]
+        WC["worker"]
+        WD["worker"]
+        Q4["queue spread ~5 each<br/>TTFT ~1.6s"]
+        Q4 --> WA & WB & WC & WD
+    end
+    SVC --> ONE
+    SVC -.->|"kubectl scale --replicas=4"| FOUR

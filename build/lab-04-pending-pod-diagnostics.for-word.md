@@ -290,4 +290,6 @@ Real screenshots for this lab are in [`artifacts/lab-04/screenshots/`](artifacts
 
 ---
 
-**Next:** [Lab A — Cluster Architecture Choices: Autopilot vs. Standard](lab-A-cluster-architecture.docx)
+---
+
+**Next:** [Lab 5 — Autopilot vs Standard, Private Clusters & Release Channels](lab-05-cluster-architecture.docx)

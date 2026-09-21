@@ -1,0 +1,6 @@
+flowchart TB
+    SS["StatefulSet db-0"] --> PVC["PVC data-db-0<br/>(pd.csi, 1Gi)"]
+    PVC --> PD["real Persistent Disk<br/>/data/message = important-data-v1"]
+    PD -->|"VolumeSnapshot"| SNAP["snapshot db-snap<br/>readyToUse = true"]
+    PVC -.->|"delete StatefulSet + PVC"| GONE["volume gone"]
+    SNAP -->|"dataSource on a new PVC"| RESTORE["PVC data-restored<br/>/data/message intact"]

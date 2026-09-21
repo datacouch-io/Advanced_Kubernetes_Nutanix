@@ -1,0 +1,8 @@
+flowchart TB
+    SVC["Service type=LoadBalancer"] --> Q{"is there a load-balancer<br/>controller?"}
+    Q -->|"cloud (GKE): yes"| CLOUD["cloud LB assigns EXTERNAL-IP"]
+    Q -->|"bare-metal / kind: no"| PENDING["EXTERNAL-IP stays &lt;pending&gt;"]
+    PENDING -->|"install MetalLB + IPAddressPool"| METAL["MetalLB assigns an IP from the pool<br/>and announces it (L2) from one node"]
+    METAL --> REACH["Service reachable at the IP"]
+    REACH -.->|"announcing node fails"| FAILOVER["another node re-announces<br/>the same IP"]
+    FAILOVER --> REACH

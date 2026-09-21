@@ -1,0 +1,7 @@
+flowchart TB
+    TRIVY["trivy image (scan, out-of-band)"] -.->|"CVE count: old vs current image"| IMG["container image"]
+    APPLY["kubectl apply / run"] --> API["kube-apiserver"]
+    API --> WEBHOOK["Kyverno admission webhook<br/>ValidatingPolicy (CEL)"]
+    WEBHOOK -->|"spec violates policy"| DENY["DENIED at admission"]
+    WEBHOOK -->|"spec passes policy"| ADMIT["admitted"]
+    ADMIT -.->|"but image not built for non-root"| CRASH["may still CRASH at runtime"]

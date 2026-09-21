@@ -1,0 +1,6 @@
+flowchart TB
+    P1["pod stdout<br/>(node 1)"] --> PT1["Promtail<br/>(DaemonSet)"]
+    P2["pod stdout<br/>(node 2)"] --> PT2["Promtail<br/>(DaemonSet)"]
+    PT1 -->|"lines + labels"| LOKI["Loki<br/>(indexes by label)"]
+    PT2 -->|"lines + labels"| LOKI
+    LOKI -->|"LogQL:<br/>{namespace=&quot;shop2&quot;} |= &quot;ERROR&quot;"| YOU["you — the exact<br/>failing line + timestamp"]

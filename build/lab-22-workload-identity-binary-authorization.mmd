@@ -1,0 +1,13 @@
+flowchart TB
+    subgraph WI["Workload Identity"]
+        KSA1["Pod wi-test<br/>KSA: wi-demo-ksa (bound)"] -->|"workloadIdentityUser"| GSA["GSA: wi-demo-gsa<br/>storage.objectViewer"]
+        GSA --> BUCKET["GCS bucket"]
+        KSA2["Pod wi-test-unbound<br/>KSA: default"] -.->|"no binding"| PH["svc.id.goog placeholder<br/>403: no access"]
+    end
+    subgraph BA["Binary Authorization"]
+        KMS["Cloud KMS key"] -->|"public key"| ATT["Attestor"]
+        IMGT["image by tag"] --> D1["DENY: needs a digest"]
+        IMGU["image by digest, unsigned"] --> D2["DENY: no attestation"]
+        SIGN["sign-and-create over the digest"] --> ATT
+        ATT -->|"valid signature"| ADMIT["image by digest, signed → Running"]
+    end

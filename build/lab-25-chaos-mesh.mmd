@@ -1,0 +1,15 @@
+flowchart TB
+    subgraph CTRL["Chaos Mesh control plane"]
+        MGR["chaos-controller-manager"]
+    end
+    subgraph NODE["kind node"]
+        DAEMON["chaos-daemon<br/>(DaemonSet)"]
+        POD1["resilient-app Pod 1"]
+        POD2["resilient-app Pod 2"]
+        DAEMON -.->|"kill -9 (PodChaos)"| POD1
+        DAEMON -.->|"tc netem delay (NetworkChaos)"| POD2
+    end
+    PODCHAOS["PodChaos CR<br/>pod-kill, mode: one"] --> MGR
+    NETCHAOS["NetworkChaos CR<br/>delay 2s, mode: all, 60s"] --> MGR
+    MGR --> DAEMON
+    POD1 -.->|"Deployment controller recreates"| POD1B["resilient-app Pod 1' (new)"]

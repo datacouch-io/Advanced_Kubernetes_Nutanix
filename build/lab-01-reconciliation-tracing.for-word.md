@@ -284,4 +284,6 @@ The real screenshots for this lab are in [`artifacts/lab-01/screenshots/`](artif
 
 ---
 
-**Next:** [Lab 2 — API Request Lifecycle & Priority and Fairness](lab-02-api-priority-fairness.docx)
+---
+
+**Next:** [Lab 2 — Stop One Client From Taking Down the API Server (API Priority & Fairness)](lab-02-api-priority-fairness.docx)

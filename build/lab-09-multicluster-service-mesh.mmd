@@ -1,0 +1,19 @@
+flowchart TB
+    RCA["Root CA (shared)"] --> ICA_A["Intermediate CA<br/>platform-a"]
+    RCA --> ICA_B["Intermediate CA<br/>platform-b"]
+    subgraph A["platform-a (istiod, network1)"]
+        ICA_A --> IA["istiod"]
+        BE["backend (sidecar)"]
+        EWA["east-west gateway"]
+        SVCA["Service: database<br/>(no local endpoint)"]
+    end
+    subgraph B["platform-b (istiod, network2)"]
+        ICA_B --> IB["istiod"]
+        DB["database (sidecar)"]
+        EWB["east-west gateway"]
+        SVCB["Service: database<br/>(real endpoint)"]
+    end
+    BE -->|"http://database:5432"| SVCA
+    SVCA -.->|"remote secret discovery"| EWA
+    EWA <-->|"mTLS, shared root CA"| EWB
+    EWB --> SVCB --> DB

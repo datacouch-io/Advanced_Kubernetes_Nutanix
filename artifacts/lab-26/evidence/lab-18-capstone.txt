@@ -1,0 +1,28 @@
+# Lab 18 — Capstone: Production War-Room — command transcript
+# Cluster: GKE advk8s-lab (dcproject-462806), Sun Sep 20 21:14:53 IST 2026
+
+=== TRIAGE (incident state, captured live) ===
+orders     Pending                      # 1 scheduling (nodeSelector disktype=nvme)
+payments   ImagePullBackOff             # 2 image (typo nginx:1.27-alpnie)
+checkout   CreateContainerConfigError   # 3 config (configmap checkout-config missing)
+frontend   2x Running, endpoints <none> # 4 networking (svc selector app=frontendd)
+legacy-record deletionTimestamp set, finalizer warroom.example.com/blocker  # 5 lifecycle
+data PVC   Pending (storageClass fast-nvme)  # 6 storage
+
+=== RESOLVED (verified live) ===
+$ kubectl -n warroom get pods
+NAME                         READY   STATUS    RESTARTS   AGE
+analytics-5c7c47d8cd-f6djg   1/1     Running   0          5h52m
+checkout-9b747d948-hqmgq     1/1     Running   0          5h55m
+frontend-6b67f4cfdc-rldkn    1/1     Running   0          5h55m
+frontend-6b67f4cfdc-tz6zx    1/1     Running   0          5h55m
+orders-79cfc77c55-qfmtk      1/1     Running   0          5h53m
+payments-66684b6d9c-rtbkh    1/1     Running   0          5h53m
+$ kubectl -n warroom get endpoints frontend
+NAME       ENDPOINTS                     AGE
+frontend   10.52.0.48:80,10.52.1.51:80   5h55m
+$ kubectl -n warroom get pvc data
+NAME   STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+data   Bound    pvc-ba9ea8b9-c17f-4192-8949-512b170a5e7b   1Gi        RWO            standard-rwo   <unset>                 5h53m
+$ kubectl -n warroom get configmap legacy-record
+Error from server (NotFound): configmaps "legacy-record" not found

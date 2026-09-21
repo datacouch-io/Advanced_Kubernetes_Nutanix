@@ -236,4 +236,6 @@ Real screenshots for this lab are in [`artifacts/lab-02/screenshots/`](artifacts
 
 ---
 
-**Next:** [Lab 3 — etcd Quota Alarm & Recovery](lab-03-etcd-quota-recovery.docx)
+---
+
+**Next:** [Lab 3 — Recover a Cluster That's Gone Read-Only (etcd Quota & Recovery)](lab-03-etcd-quota-recovery.docx)

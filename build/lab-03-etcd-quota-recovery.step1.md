@@ -224,4 +224,6 @@ Real screenshots for this lab are in [`artifacts/lab-03/screenshots/`](artifacts
 
 ---
 
-**Next:** [Lab 4 — Pending-Pod Diagnostics](lab-04-pending-pod-diagnostics.md)
+---
+
+**Next:** [Lab 4 — Diagnose Why a Pod Won't Schedule (Pending-Pod Diagnostics)](lab-04-pending-pod-diagnostics.md)

@@ -1,0 +1,26 @@
+flowchart TB
+    subgraph STD["Standard mode -- advk8s-standard"]
+        direction TB
+        CP1["Control plane<br/>(Google-managed)"]
+        AN["master-authorized-networks<br/>your-IP/32"]
+        NP["default-pool: 2x e2-medium<br/>you choose machine type, disk, count"]
+        N1["Node (private IP only)"]
+        N2["Node (private IP only)"]
+        CP1 -- "public endpoint, gated by" --> AN
+        AN -. "your laptop's IP" .-> CP1
+        CP1 --> NP
+        NP --> N1 & N2
+        N1 -. "privileged: true --&gt; admitted" .-> N1
+    end
+
+    subgraph AUTO["Autopilot -- advk8s-autopilot"]
+        direction TB
+        CP2["Control plane<br/>(Google-managed)"]
+        WARDEN["GKE Warden<br/>(admission webhook)"]
+        PODS["Your Pods<br/>(no node pools to configure)"]
+        MN["Nodes<br/>(fully Google-managed, never seen)"]
+        CP2 --> WARDEN
+        WARDEN -- "privileged: true --&gt; REJECTED" --> PODS
+        WARDEN -- "compliant Pods admitted" --> PODS
+        PODS -.->|"bin-packed onto"| MN
+    end
