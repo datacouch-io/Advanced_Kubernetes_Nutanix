@@ -3,7 +3,7 @@
 A hands-on, 26-lab advanced Kubernetes course. Every lab is a **student guide** — it tells you where to go, when to open a terminal, what each command does, what output to expect, and what it means — and every result is backed by a **real command run against a real cluster** with **real screenshots**. Each lab also maps its ideas to the **Nutanix Kubernetes (NKE)** platform.
 
 - **Start here for the full ordered index:** [COURSE-MAP.md](COURSE-MAP.md)
-- **Word (.docx) copies of every lab:** [`word/`](word/)
+- **Word (.docx) copies:** beside each lab, inside its day folder
 - **Renamed from an earlier scheme?** old → new mapping in [RENUMBERING-MAP.md](RENUMBERING-MAP.md)
 
 ---
@@ -26,43 +26,24 @@ Every lab follows the same shape so you always know where you are:
 
 ## Course structure
 
-Five days, 26 labs, taught in order. Full scope-per-lab table is in [COURSE-MAP.md](COURSE-MAP.md); the compact index:
+**Restructured 2026-09-25 to the client's three-day outline.** Three scheduled days of 11 labs, an
+optional additional day of 3, and 12 further labs held in reserve.
 
-### Day 1 — How Kubernetes Really Works
-1. [Reconciliation Tracing](lab-01-reconciliation-tracing.md) · kind
-2. [API Priority & Fairness](lab-02-api-priority-fairness.md) · kind
-3. [etcd Quota Alarm & Recovery](lab-03-etcd-quota-recovery.md) · kind
-4. [Pending-Pod Diagnostics](lab-04-pending-pod-diagnostics.md) · GKE
-5. [Cluster Architecture: Autopilot vs Standard](lab-05-cluster-architecture.md) · GKE
+| Folder | Outline coverage | Labs |
+|---|---|---|
+| [`day-1-internals-and-networking/`](day-1-internals-and-networking/) | Modules 1–4 — internals & networking | 4 |
+| [`day-2-stateful-storage-and-exposure/`](day-2-stateful-storage-and-exposure/) | Modules 5–8 — stateful, storage, exposure, logging | 4 |
+| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 — GitOps, fleet, quotas | 3 |
+| [`additional/optional-day-control-plane-and-war-room/`](additional/optional-day-control-plane-and-war-room/) | Modules 12–14 — optional fourth day | 3 |
+| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 12 |
 
-### Day 2 — Operating the Platform Under Pressure
-6. [Operators, Finalizers & Stuck Deletions](lab-06-operators-finalizers.md) · GKE
-7. [Cluster Scale Knee-Point](lab-07-cluster-scale-knee-point.md) · GKE
-8. [Cilium & Hubble Flow Diagnosis](lab-08-cilium-hubble.md) · kind
-9. [Multi-Cluster Service Mesh with Istio](lab-09-multicluster-service-mesh.md) · GKE ×2
-10. [Image Scanning & Admission Control (Kyverno)](lab-10-image-scanning-admission-control.md) · GKE
+Each day folder holds its labs, their `.docx` handouts, and a README mapping **module → lab**.
+Scope-per-lab tables for all 26 are in [COURSE-MAP.md](COURSE-MAP.md).
 
-### Day 3 — Stateful Workloads, Storage & Exposure
-11. [StatefulSets, PVCs & Volume Snapshots](lab-11-statefulsets-snapshots.md) · GKE
-12. [Backup & Restore with Velero](lab-12-velero-backup-restore.md) · GKE
-13. [Bare-Metal LoadBalancer (MetalLB)](lab-13-metallb.md) · kind
-14. [Log-Based Diagnosis with Loki](lab-14-loki.md) · GKE
-
-### Day 4 — GitOps, Fleet & Governance
-15. [GitOps Delivery with Flux](lab-15-flux.md) · GKE
-16. [Fleet Registration & Staged Rollout](lab-16-fleet.md) · kind ×3
-17. [Multi-Tenant Quota with Kueue](lab-17-kueue.md) · GKE
-
-### Day 5 — Kubernetes as the AI-Native Platform
-18. [Dynamic Resource Allocation (DRA)](lab-18-dra.md) · kind
-19. [Kueue-Managed Distributed Training](lab-19-distributed-training.md) · GKE
-20. [Advanced HPA/VPA Autoscaling](lab-20-hpa-vpa-autoscaling.md) · kind
-21. [Inference Autoscaling Signals](lab-21-inference-autoscaling.md) · GKE
-22. [Workload Identity & Binary Authorization](lab-22-workload-identity-binary-authorization.md) · GKE
-23. [Runtime Security with Falco](lab-23-falco-runtime-security.md) · kind
-24. [Guardrailed Agentic Kubernetes](lab-24-agentic-guardrails.md) · GKE
-25. [Chaos Engineering with Chaos Mesh](lab-25-chaos-mesh.md) · kind
-26. [Capstone: Production War-Room](lab-26-capstone.md) · GKE
+**Lab numbering is unchanged** (`lab-01` … `lab-26`), so the day folders read out of numeric order —
+Day 1 is labs 01, 02, 04, 08. That is deliberate: keeping the IDs stable means evidence paths, `.docx`
+filenames and [RENUMBERING-MAP.md](RENUMBERING-MAP.md) all still line up. The module mapping, not the
+lab number, is the running order.
 
 ## Platforms & cost
 
@@ -84,7 +65,7 @@ Each lab's **Before you start** section lists exactly what that lab needs, so yo
 
 ## Building the Word documents
 
-Every lab has a pre-built `.docx` in [`word/`](word/). To rebuild one from its Markdown (renders the Mermaid diagram via Kroki, then pandoc):
+Every lab has a pre-built `.docx` in the day folders. To rebuild one from its Markdown (renders the Mermaid diagram via Kroki, then pandoc):
 
 ```bash
 bash tools/lab2docx.sh lab-13-metallb.md "Lab 13 — Bare-Metal LoadBalancer with MetalLB"

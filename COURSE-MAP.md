@@ -1,51 +1,83 @@
 # Advanced Kubernetes (Nutanix) — Course Map
 
-26 labs, taught in order. Each lab is a self-contained student guide (orientation → step-by-step with real screenshots → "what you learned" → evidence) and ships with a matching `.docx` in [`word/`](word/).
+**Restructured 2026-09-25 to the client's three-day outline** (`Kubernetes_Advanced_3-Day_Outline.docx`).
 
-**Platform key:** `GKE` = Google Kubernetes Engine · `kind` = local Docker-based cluster (used where the lab needs control-plane, CNI, multi-cluster, or bare-metal access).
+Three scheduled days of 11 labs, an optional additional day of 3, and 12 further labs held in reserve.
+Every lab is a self-contained student guide — orientation → step-by-step with real screenshots →
+"what you learned" → evidence — and ships with a matching `.docx` beside it.
 
-## Day 1 — How Kubernetes Really Works
-| # | Lab | Scope | Platform |
-|---|-----|-------|----------|
-| 1 | [Reconciliation Tracing](lab-01-reconciliation-tracing.md) | Watch desired vs observed state converge after disruptive actions | kind |
-| 2 | [API Priority & Fairness](lab-02-api-priority-fairness.md) | Keep critical traffic succeeding under a LIST storm with a FlowSchema | kind |
-| 3 | [etcd Quota Alarm & Recovery](lab-03-etcd-quota-recovery.md) | Trip the etcd NOSPACE alarm, then compact/defrag/disarm back to writable | kind |
-| 4 | [Pending-Pod Diagnostics](lab-04-pending-pod-diagnostics.md) | Diagnose and clear seeded unschedulable Pods | GKE |
-| 5 | [Cluster Architecture: Autopilot vs Standard](lab-05-cluster-architecture.md) | Private clusters, master-authorized-networks lockout/recovery, release channels | GKE |
+**Platform key:** `GKE` = Google Kubernetes Engine · `kind` = local Docker-based cluster, used where
+the lab needs control-plane, CNI, multi-cluster or bare-metal access.
 
-## Day 2 — Operating the Platform Under Pressure
-| # | Lab | Scope | Platform |
-|---|-----|-------|----------|
-| 6 | [Operators, Finalizers & Stuck Deletions](lab-06-operators-finalizers.md) | Free a resource stuck `Terminating` by fixing its finalizer | GKE |
-| 7 | [Cluster Scale Knee-Point](lab-07-cluster-scale-knee-point.md) | Find the load level where scheduling latency degrades | GKE |
-| 8 | [Cilium & Hubble Flow Diagnosis](lab-08-cilium-hubble.md) | Trace a dropped flow to a specific network policy, then confirm the fix | kind |
-| 9 | [Multi-Cluster Service Mesh with Istio](lab-09-multicluster-service-mesh.md) | One logical Service across two clusters; verify cross-cluster routing in Envoy | GKE ×2 |
-| 10 | [Image Scanning & Admission Control (Kyverno)](lab-10-image-scanning-admission-control.md) | Block non-compliant images at admission; spec-compliant ≠ safe | GKE |
+| Folder | Outline coverage | Labs |
+|---|---|---|
+| [`day-1-internals-and-networking/`](day-1-internals-and-networking/) | Modules 1–4 | 4 |
+| [`day-2-stateful-storage-and-exposure/`](day-2-stateful-storage-and-exposure/) | Modules 5–8 | 4 |
+| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 | 3 |
+| [`additional/optional-day-control-plane-and-war-room/`](additional/optional-day-control-plane-and-war-room/) | Modules 12–14 (optional day) | 3 |
+| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 12 |
 
-## Day 3 — Stateful Workloads, Storage & Exposure
-| # | Lab | Scope | Platform |
-|---|-----|-------|----------|
-| 11 | [StatefulSets, PVCs & Volume Snapshots](lab-11-statefulsets-snapshots.md) | Survive a snapshot/restore cycle with data intact | GKE |
-| 12 | [Backup & Restore with Velero](lab-12-velero-backup-restore.md) | Delete a whole namespace and bring it back from object storage | GKE |
-| 13 | [Bare-Metal LoadBalancer (MetalLB)](lab-13-metallb.md) | Give a `LoadBalancer` Service a real IP on bare metal; survive node failure | kind |
-| 14 | [Log-Based Diagnosis with Loki](lab-14-loki.md) | Pinpoint a failure's root cause with a LogQL query | GKE |
+---
 
-## Day 4 — GitOps, Fleet & Governance
-| # | Lab | Scope | Platform |
-|---|-----|-------|----------|
-| 15 | [GitOps Delivery with Flux](lab-15-flux.md) | Deliver from Git; manual drift is reverted automatically | GKE |
-| 16 | [Fleet Registration & Staged Rollout](lab-16-fleet.md) | One commit rolls out across a fleet; drift on one cluster is corrected | kind ×3 |
-| 17 | [Multi-Tenant Quota with Kueue](lab-17-kueue.md) | A quota-blocked tenant borrows idle capacity via a cohort | GKE |
+## Day 1 — How Kubernetes Really Works: Internals & Networking
 
-## Day 5 — Kubernetes as the AI-Native Platform
-| # | Lab | Scope | Platform |
-|---|-----|-------|----------|
-| 18 | [Dynamic Resource Allocation (DRA)](lab-18-dra.md) | Request a device by attribute; placed only on a matching node | kind |
-| 19 | [Kueue-Managed Distributed Training](lab-19-distributed-training.md) | A real `torch.distributed` PyTorchJob queued and admitted by Kueue | GKE |
-| 20 | [Advanced HPA/VPA Autoscaling](lab-20-hpa-vpa-autoscaling.md) | Asymmetric HPA behavior; VPA in-place resize with zero restarts | kind |
-| 21 | [Inference Autoscaling Signals](lab-21-inference-autoscaling.md) | TTFT/queue-depth spike under load, then recover after scaling out | GKE |
-| 22 | [Workload Identity & Binary Authorization](lab-22-workload-identity-binary-authorization.md) | Per-pod cloud identity; only signed images admitted | GKE |
-| 23 | [Runtime Security with Falco](lab-23-falco-runtime-security.md) | Kernel-level alerts on live container misbehavior; a custom rule | kind |
-| 24 | [Guardrailed Agentic Kubernetes](lab-24-agentic-guardrails.md) | An agent's mutations denied + audited by policy; reads succeed | GKE |
-| 25 | [Chaos Engineering with Chaos Mesh](lab-25-chaos-mesh.md) | Kill a Pod (self-heal) and inject latency (surface a hidden outage) | kind |
-| 26 | [Capstone: Production War-Room](lab-26-capstone.md) | Diagnose and heal six simultaneous fault domains; write the postmortem | GKE |
+| Module | Topic | Lab | What the lab proves | Platform |
+|---|---|---|---|---|
+| 1 | The Reconciliation Engine | [Reconciliation Tracing](day-1-internals-and-networking/lab-01-reconciliation-tracing.md) | Watch desired vs observed state converge after disruptive actions | kind |
+| 2 | The API Server & Request Lifecycle at Scale | [API Priority & Fairness](day-1-internals-and-networking/lab-02-api-priority-fairness.md) | Keep critical traffic succeeding under a LIST storm with a FlowSchema | kind |
+| 3 | Scheduling & Controllers | [Pending-Pod Diagnostics](day-1-internals-and-networking/lab-04-pending-pod-diagnostics.md) | Diagnose and clear seeded unschedulable Pods | GKE |
+| 4 | Networking & the Data Plane | [Cilium & Hubble Flow Diagnosis](day-1-internals-and-networking/lab-08-cilium-hubble.md) | Trace a dropped flow to a specific network policy, then confirm the fix | kind |
+
+*End-of-day diagnostic scenario — Pending **and** DNS failure — is run from the Module 3 and Module 4
+labs back to back. No separate lab file.*
+
+## Day 2 — Stateful Workloads, Persistent Storage & Service Exposure
+
+| Module | Topic | Lab | What the lab proves | Platform |
+|---|---|---|---|---|
+| 5 | Stateful Workloads & Persistent Storage | [StatefulSets, PVCs & Volume Snapshots](day-2-stateful-storage-and-exposure/lab-11-statefulsets-snapshots.md) | Survive a snapshot/restore cycle with data intact | GKE |
+| 6 | Backup, Restore & DR with Velero | [Backup & Restore with Velero](day-2-stateful-storage-and-exposure/lab-12-velero-backup-restore.md) | Delete a whole namespace and bring it back from object storage | GKE |
+| 7 | Service Exposure on Bare Metal | [Bare-Metal LoadBalancer (MetalLB)](day-2-stateful-storage-and-exposure/lab-13-metallb.md) | Give a `LoadBalancer` Service a real IP on bare metal; survive node failure | kind |
+| 8 | Logging & Observability with Loki | [Log-Based Diagnosis with Loki](day-2-stateful-storage-and-exposure/lab-14-loki.md) | Pinpoint a failure's root cause with a LogQL query | GKE |
+
+## Day 3 — GitOps, Fleet Management & Multi-Cluster Governance
+
+| Module | Topic | Lab | What the lab proves | Platform |
+|---|---|---|---|---|
+| 9 | GitOps with Flux CD | [GitOps Delivery with Flux](day-3-gitops-fleet-and-governance/lab-15-flux.md) | Deliver from Git; manual drift is reverted automatically | GKE |
+| 10 | Fleet Management & Multi-Cluster Ops | [Fleet Registration & Staged Rollout](day-3-gitops-fleet-and-governance/lab-16-fleet.md) | One commit rolls out across a fleet; drift on one cluster is corrected | kind ×3 |
+| 11 | Multi-Tenancy, Quotas & Limits | [Multi-Tenant Quota with Kueue](day-3-gitops-fleet-and-governance/lab-17-kueue.md) | A quota-blocked tenant borrows idle capacity via a cohort | GKE |
+
+*End-of-day diagnostic scenario — a Flux-delivered tenant change that fails to reconcile, then hits
+quota exhaustion — combines the Module 9 and Module 11 labs.*
+
+## Optional Additional Day — Control-Plane Internals & Production War-Room
+
+| Module | Topic | Lab | What the lab proves | Platform |
+|---|---|---|---|---|
+| 12 | etcd — the cluster's source of truth | [etcd Quota Alarm & Recovery](additional/optional-day-control-plane-and-war-room/lab-03-etcd-quota-recovery.md) | Trip the etcd NOSPACE alarm, then compact/defrag/disarm back to writable | kind |
+| 13 | Extending Kubernetes — CRDs & Operators | [Operators, Finalizers & Stuck Deletions](additional/optional-day-control-plane-and-war-room/lab-06-operators-finalizers.md) | Free a resource stuck `Terminating` by fixing its finalizer | GKE |
+| 14 | Capstone — Production War-Room | [Capstone: Production War-Room](additional/optional-day-control-plane-and-war-room/lab-26-capstone.md) | Diagnose and heal six simultaneous fault domains; write the postmortem | GKE |
+
+## Further Labs — not in this outline
+
+Twelve tested labs held in reserve. Full table in
+[`additional/further-labs/README.md`](additional/further-labs/README.md).
+
+Cluster architecture · scale knee-point · Istio multi-cluster mesh · Kyverno admission control ·
+DRA · distributed training · HPA/VPA · inference autoscaling · workload identity & binary
+authorization · Falco · agentic guardrails · Chaos Mesh.
+
+---
+
+## Shared assets
+
+| Path | Contents |
+|---|---|
+| [`artifacts/`](artifacts/) | Per-lab `screenshots/`, `diagrams/`, `evidence/` — referenced by every lab |
+| [`tools/`](tools/) | `lab2docx.sh` and helpers that build the Word copies |
+| [`build/`](build/) | Intermediate build files and the Word reference style |
+
+Lab numbering (`lab-01` … `lab-26`) is **unchanged** from the 26-lab course — only the folders moved,
+so evidence paths, `.docx` names and the old→new history in
+[`RENUMBERING-MAP.md`](RENUMBERING-MAP.md) all still line up.

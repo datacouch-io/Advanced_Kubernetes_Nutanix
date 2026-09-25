@@ -24,7 +24,7 @@ You'll create a Deployment that asks for 3 Pods, then **break it four different 
 ## Before you start
 
 - **Where you'll work:** on your own computer, in a **terminal**. This lab uses a local `kind` cluster (Kubernetes in Docker) — no cloud account, nothing to pay for.
-- **Tools you need** (see the [Setup Environment Guide](00-setup-environment-guide.docx) if any are missing):
+- **Tools you need** (see the [Setup Environment Guide](../00-setup-environment-guide.docx) if any are missing):
   - `docker` — installed and **running**
   - `kind` — to create the cluster
   - `kubectl` — to talk to it
@@ -90,7 +90,7 @@ kubectl rollout status deployment/web --timeout=90s
 
 **What you should see:** four nodes listed as `Ready` (one `control-plane` and three `worker`s), all on `v1.37.0`, then the Deployment finishing with `deployment "web" successfully rolled out`.
 
-![Cluster up and desired state declared](artifacts/lab-01/screenshots/01-cluster-and-deploy.png)
+![Cluster up and desired state declared](../artifacts/lab-01/screenshots/01-cluster-and-deploy.png)
 
 **What this means:** you've declared a desired state — "I want 3 `web` Pods." You didn't say *where* to put them or *how* to keep them alive; from here on, a controller does that for you. Keep this cluster running — Labs 2–4 reuse it.
 
@@ -119,7 +119,7 @@ spec.replicas=3  status.replicas=3  ready=3  generation=1  observedGeneration=1
 ```
 and the Pods are spread across all three worker nodes.
 
-![Desired vs observed, and the ownership chain](artifacts/lab-01/screenshots/02-desired-vs-observed.png)
+![Desired vs observed, and the ownership chain](../artifacts/lab-01/screenshots/02-desired-vs-observed.png)
 
 **What this means:** desired (`spec.replicas=3`) and observed (`status.replicas=3 ready=3`) agree — the loop is at rest. The `OWNER` of the ReplicaSet is `Deployment`, and you never chose which node each Pod lands on; the scheduler placed them and the ReplicaSet controller keeps the count. Remember `generation` and `observedGeneration` — you'll use them in Step 6.
 
@@ -145,7 +145,7 @@ Now look back at the first terminal.
 
 **What you should see:** the deleted Pod goes to `Terminating`, and a **brand-new Pod appears within seconds**. In our run the replacement showed `AGE 5s` while its two siblings were at `2m25s`.
 
-![A deleted Pod is replaced within seconds](artifacts/lab-01/screenshots/03-delete-pod-reconcile.png)
+![A deleted Pod is replaced within seconds](../artifacts/lab-01/screenshots/03-delete-pod-reconcile.png)
 
 **What this means:** nobody *told* the controller "a Pod was deleted." On its next pass it simply counted "2 running, I want 3" and created one. You briefly had 2 Pods; the loop brought you back to 3. That's level-triggering.
 
@@ -174,7 +174,7 @@ kubectl get pods -l app=web
 
 **What you should see:** the `scale` command *succeeds* — but the very next line already reads `rs.spec.replicas=3`, not `1`. And after you delete the ReplicaSet, an **identically-named** one reappears with 3 fresh Pods (`AGE 4s`).
 
-![The Deployment controller reverts the hand-edit instantly](artifacts/lab-01/screenshots/04-level-triggered-revert.png)
+![The Deployment controller reverts the hand-edit instantly](../artifacts/lab-01/screenshots/04-level-triggered-revert.png)
 
 > ⚠️ **Gotcha — the loop is faster than you are.** Your `kubectl scale rs … --replicas=1` really did set it to 1. But the Deployment controller owns that ReplicaSet, saw the change, and reverted it to 3 *before your next command could read it back*. If you want to actually *see* the flip, run `kubectl get rs "$RS" -w` in a second terminal while you scale — you'll catch the `1 → 3` bounce.
 
@@ -200,7 +200,7 @@ kubectl get pods -l app=web -o wide
 
 **What you should see:** the node becomes `Ready,SchedulingDisabled`, its `web` Pods are evicted, and within seconds you're back to **5 running Pods** — now spread only across the two remaining workers, **none on the drained node**. (The `kindnet` / `kube-proxy` system Pods are correctly left alone.)
 
-![Draining a node reschedules its Pods; the count holds](artifacts/lab-01/screenshots/05-node-drain-reschedule.png)
+![Draining a node reschedules its Pods; the count holds](../artifacts/lab-01/screenshots/05-node-drain-reschedule.png)
 
 **2. Put the node back when you're done:**
 
@@ -227,7 +227,7 @@ kubectl get deploy web -o jsonpath='gen={.metadata.generation}  observedGen={.st
 
 **What you should see:** the moment you scale, `gen` and `observedGen` both jump together (to `3` in our run), but `ready` lags — right after the change it read `status.replicas=6 ready=5`, then climbed to `ready=6`.
 
-![generation and observedGeneration vs readyReplicas](artifacts/lab-01/screenshots/06-generation-convergence.png)
+![generation and observedGeneration vs readyReplicas](../artifacts/lab-01/screenshots/06-generation-convergence.png)
 
 **What this means** — this is the distinction most people miss:
 - **`generation` vs `observedGeneration`** answers *"has the controller noticed my latest change?"* — that's near-instant.
@@ -280,7 +280,7 @@ kind delete cluster --name advk8s-day1
 
 ## Evidence
 
-The real screenshots for this lab are in [`artifacts/lab-01/screenshots/`](artifacts/lab-01/screenshots/) (6 images), and a full transcript of the commands and output is in [`artifacts/lab-01/evidence/lab-01-reconciliation.txt`](artifacts/lab-01/evidence/lab-01-reconciliation.txt).
+The real screenshots for this lab are in [`artifacts/lab-01/screenshots/`](../artifacts/lab-01/screenshots/) (6 images), and a full transcript of the commands and output is in [`artifacts/lab-01/evidence/lab-01-reconciliation.txt`](../artifacts/lab-01/evidence/lab-01-reconciliation.txt).
 
 ---
 

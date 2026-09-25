@@ -1,3 +1,19 @@
+> # ⚠️ STALE — DO NOT ISSUE TO LEARNERS
+>
+> This file is the **source repo's original sixteen-lab guide**, not a guide to this course. Its day
+> split ("Multi-Cluster & Service Mesh / Security & Scaling / AI-ML & Observability") and its lab
+> names belong to a different syllabus — seven of its links point at labs that **do not exist here**
+> (`lab-13-gpu-tpu-inference-gke.md`, `lab-11-cluster-autoscaler-gpu-nodepools.md`, and others).
+>
+> It was already stale before the 2026-09-25 three-day restructure; the move did not break it.
+>
+> **It needs a full rewrite** against the current structure: the three scheduled days in
+> [`COURSE-MAP.md`](COURSE-MAP.md), the tools each of the 11 core labs actually needs, and the
+> GKE/kind split. Until then the per-lab **Before you start** sections are authoritative — each lab
+> states its own prerequisites.
+
+---
+
 # Advanced Kubernetes — Environment Setup Guide
 
 **Day 1: Multi-Cluster & Service Mesh · Day 2: Security & Scaling/Optimization · Day 3: AI/ML & Observability**

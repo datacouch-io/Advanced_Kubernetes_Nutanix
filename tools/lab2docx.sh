@@ -1,13 +1,14 @@
 #!/bin/bash
 # lab2docx.sh <lab-file.md> "<Title>"
-# Builds word/<lab>.docx: renders the one Mermaid block to a PNG (via Kroki),
+# Builds <lab-dir>/<lab>.docx: renders the one Mermaid block to a PNG (via Kroki),
 # swaps it into a temp copy, runs md_for_word.py, then pandoc -> docx.
 set -e
 cd "$(dirname "$0")/.."
 md="$1"; title="$2"
-base="${md%.md}"
+src_dir=$(dirname "$md")
+base=$(basename "${md%.md}")
 labid=$(echo "$base" | sed -E 's/^(lab-[0-9]+[a-z]?|lab-[A-Za-z]).*/\1/')
-mkdir -p build word "artifacts/$labid/diagrams"
+mkdir -p build "artifacts/$labid/diagrams"
 
 # extract the mermaid block (if any)
 python3 - "$md" "build/$base.mmd" <<'PY'
@@ -41,7 +42,7 @@ PY
 
 python3 tools/md_for_word.py "build/$base.step1.md" "build/$base.for-word.md" >/dev/null
 REF=""; [ -f build/reference-styled.docx ] && REF="--reference-doc=build/reference-styled.docx"
-pandoc "build/$base.for-word.md" --from gfm --to docx --resource-path=".:artifacts" --toc --toc-depth=2 $REF \
+pandoc "build/$base.for-word.md" --from gfm --to docx --resource-path="$src_dir:.:artifacts" --toc --toc-depth=2 $REF \
   --metadata title="$title" --metadata author="DataCouch — Advanced Kubernetes (Nutanix)" \
-  -o "word/$base.docx"
-echo "built word/$base.docx ($(unzip -l "word/$base.docx" 2>/dev/null | grep -c 'word/media/') images)"
+  -o "$src_dir/$base.docx"
+echo "built $src_dir/$base.docx ($(unzip -l "$src_dir/$base.docx" 2>/dev/null | grep -c 'word/media/') images)"

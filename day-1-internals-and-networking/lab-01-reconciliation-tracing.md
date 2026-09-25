@@ -48,7 +48,27 @@ Two properties make this powerful, and you'll watch both in this lab:
 - **Level-triggered, not edge-triggered.** A controller doesn't react to an *event* ("a Pod was deleted") — it reacts to the *current situation* ("I want 3, I count 2"). So it doesn't matter *how* things drifted; the fix is always the same.
 - **Ownership.** Higher-level objects own lower-level ones — a Deployment owns a ReplicaSet, which owns Pods — and each owner constantly repairs its children.
 
-![Architecture diagram](artifacts/lab-01/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    subgraph DESIRED["Desired state — what you asked for"]
+        SPEC["Deployment .spec<br/>replicas: 3"]
+    end
+    API["kube-apiserver + etcd<br/>the single source of truth"]
+    subgraph CONTROL["kube-controller-manager"]
+        DC["Deployment controller"]
+        RSC["ReplicaSet controller"]
+    end
+    subgraph OBSERVED["Observed state — what actually is"]
+        PODS["Running Pods<br/>.status.replicas / readyReplicas"]
+    end
+
+    SPEC --> API
+    API -->|"watch (level-triggered)"| DC
+    DC -->|"owns &amp; sets replicas on"| RSC
+    RSC -->|"create / delete Pods"| PODS
+    PODS -->|"status reported via kubelet"| API
+    API -.->|"compare .spec vs .status<br/>any drift =&gt; act again"| DC
+```
 
 That loop is what you'll trace for the rest of the lab.
 
