@@ -26,16 +26,16 @@ Every lab follows the same shape so you always know where you are:
 
 ## Course structure
 
-**Restructured 2026-09-25 to the client's three-day outline.** Three scheduled days of 11 labs, an
+**Restructured 2026-09-25 to the client's three-day outline.** Three scheduled days of 13 labs, an
 optional additional day of 3, and 12 further labs held in reserve.
 
 | Folder | Outline coverage | Labs |
 |---|---|---|
 | [`day-1-internals-and-networking/`](day-1-internals-and-networking/) | Modules 1–4 — internals & networking | 4 |
 | [`day-2-stateful-storage-and-exposure/`](day-2-stateful-storage-and-exposure/) | Modules 5–8 — stateful, storage, exposure, logging | 4 |
-| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 — GitOps, fleet, quotas | 3 |
+| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 — GitOps, fleet, quotas | 5 |
 | [`additional/optional-day-control-plane-and-war-room/`](additional/optional-day-control-plane-and-war-room/) | Modules 12–14 — optional fourth day | 3 |
-| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 12 |
+| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 13 |
 
 Each day folder holds its labs, their `.docx` handouts, and a README mapping **module → lab**.
 Scope-per-lab tables for all 26 are in [COURSE-MAP.md](COURSE-MAP.md).

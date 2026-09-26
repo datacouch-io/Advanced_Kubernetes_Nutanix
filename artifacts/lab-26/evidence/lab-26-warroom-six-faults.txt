@@ -1,0 +1,115 @@
+Advanced Kubernetes (Nutanix) — Lab 26 Capstone (Module 14) — six fault domains
+Captured 2026-09-25 16:45 IST on a 3-node kind cluster, Kubernetes 1.37.0,
+Kueue v0.14.2. Seeded by artifacts/lab-26/seed-warroom.sh. All output is real.
+==============================================================================
+
+### TRIAGE — what a team sees first
+$ kubectl -n shop get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+catalog-657fb457dd-4pxfq    1/1     Running   0          15m
+checkout-7ddf65b685-8jt7k   0/1     Pending   0          10m
+checkout-87d88fbb5-62c5t    1/1     Running   0          15m
+checkout-87d88fbb5-v4xxg    1/1     Running   0          15m
+reporter-5bcc5854d-2h4zf    1/1     Running   0          7m26s
+reporter-5bcc5854d-p2l6k    1/1     Running   0          7m26s
+reporter-5bcc5854d-v99lz    1/1     Running   0          7m26s
+reporter-5bcc5854d-w6frf    1/1     Running   0          7m26s
+shopper                     1/1     Running   0          15m
+
+$ kubectl -n shop get job,workloads
+NAME                       STATUS      COMPLETIONS   DURATION   AGE
+job.batch/revenue-rollup   Suspended   0/2                      9m23s
+
+NAME                                               QUEUE     RESERVED IN   ADMITTED   FINISHED   AGE
+workload.kueue.x-k8s.io/job-revenue-rollup-a4b6e   nightly                                       9m23s
+
+================ FAULT 1 — API PRESSURE (Module 2) ================
+Symptom: the reporting client is being refused by the API server.
+$ kubectl -n shop logs -l app=reporter --tail=3
+11:15:01 API REJECTED 429 Too Many Requests
+11:15:01 API REJECTED 429 Too Many Requests
+11:15:01 API REJECTED 429 Too Many Requests
+
+$ kubectl get --raw /debug/api_priority_and_fairness/dump_priority_levels
+PriorityLevelName, ActiveQueues, IsIdle, IsQuiescing, WaitingRequests, ExecutingRequests, DispatchedRequests, RejectedRequests, TimedoutRequests, CancelledRequests
+shop-reporting,    0,            true,   false,       0,               0,                 37734,              94345,            0,                0
+
+Diagnosis: FlowSchema 'shop-reporting' routes this ServiceAccount into a
+PriorityLevelConfiguration with nominalConcurrencyShares=1 and limitResponse=Reject,
+so anything above one concurrent request is refused outright rather than queued.
+$ kubectl get flowschema shop-reporting -o yaml | grep -A3 priorityLevel
+shop-reporting
+  shares=1 limitResponse=Reject
+
+================ FAULT 2 — ETCD (Module 12) ================
+$ etcdctl endpoint status
+┌────────────────────────┬──────────────────┬─────────┬─────────────────┬─────────┬────────┬───────────────────────┬───────┬───────────┬────────────┬───────────┬────────────┬────────────────────┬────────┬──────────────────────────┬───────────────────┐
+│        ENDPOINT        │        ID        │ VERSION │ STORAGE VERSION │ DB SIZE │ IN USE │ PERCENTAGE NOT IN USE │ QUOTA │ IS LEADER │ IS LEARNER │ RAFT TERM │ RAFT INDEX │ RAFT APPLIED INDEX │ ERRORS │ DOWNGRADE TARGET VERSION │ DOWNGRADE ENABLED │
+├────────────────────────┼──────────────────┼─────────┼─────────────────┼─────────┼────────┼───────────────────────┼───────┼───────────┼────────────┼───────────┼────────────┼────────────────────┼────────┼──────────────────────────┼───────────────────┤
+│ https://127.0.0.1:2379 │ 4e3c161948c74816 │   3.7.0 │           3.7.0 │  8.7 MB │ 7.8 MB │                   11% │ 17 MB │      true │      false │         3 │       3274 │               3274 │        │                          │             false │
+
+Diagnosis: the backend quota has been set to 16.7 MB (someone's tuning experiment
+left in place) and the database is over half of it, with dead space accumulating
+from deleted objects. Under sustained write load this reaches the NOSPACE alarm and
+etcd goes read-only — at which point NOTHING else in this list can be fixed.
+
+Remediation — compact to the current revision, then defragment:
+  etcdctl compact <revision>
+  etcdctl defrag
+Measured on this cluster earlier in the run:
+  before : dbSize 5.8 MB | inUse 2.8 MB | 53% not in use
+  after  : dbSize 1.4 MB | inUse 1.4 MB |  1% not in use   (defrag took 16.5ms)
+
+================ FAULT 3 — OPERATOR (Module 13) ================
+$ kubectl -n shop get ledger
+NAME            AGE
+nightly-close   9m51s
+deletionTimestamp : 2026-09-25T11:05:10Z
+finalizers        : ["finance.shop.io/archive-before-delete"]
+
+Diagnosis: the CR carries finance.shop.io/archive-before-delete but no controller
+is running to clear it, so deletion blocks forever. Remediation is to remove the
+finalizer — after establishing that the archive it promises is genuinely not needed.
+
+================ FAULT 4 — SCHEDULING (Module 3) ================
+$ kubectl -n shop get pods -l app=checkout
+NAME                        READY   STATUS    RESTARTS   AGE
+checkout-7ddf65b685-8jt7k   0/1     Pending   0          10m
+checkout-87d88fbb5-62c5t    1/1     Running   0          15m
+checkout-87d88fbb5-v4xxg    1/1     Running   0          15m
+$ kubectl -n shop get events --field-selector reason=FailedScheduling
+0/3 nodes are available: 1 node(s) had untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector. preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.
+
+Diagnosis: nodeSelector disktype=nvme-tier0 matches no node in the cluster.
+$ kubectl get nodes -l disktype=nvme-tier0
+No resources found
+
+================ FAULT 5 — COREDNS / NETWORKPOLICY (Module 4) ================
+$ kubectl -n shop exec shopper -- curl http://catalog        # by NAME
+command terminated with exit code 6
+$ kubectl -n shop exec shopper -- curl http://10.96.9.21   # by IP
+  http=200
+
+Diagnosis: the name fails and the IP works, so this is resolution, not reachability.
+$ kubectl -n shop get networkpolicy shopper-egress -o yaml
+  policyTypes=["Egress"] egressRules=[{"ports":[{"port":80,"protocol":"TCP"}],"to":[{"podSelector":{"matchLabels":{"app":"catalog"}}}]}]
+
+  The egress rule allows the catalog and nothing else. An egress NetworkPolicy is
+  default-deny once it selects a Pod, so UDP/53 to kube-dns is denied with it.
+
+================ FAULT 6 — KUEUE WORKLOAD (Module 11) ================
+$ kubectl -n shop get job revenue-rollup
+NAME             STATUS      COMPLETIONS   DURATION   AGE
+revenue-rollup   Suspended   0/2                      9m28s
+$ kubectl -n shop get workloads
+NAME                       QUEUE     RESERVED IN   ADMITTED   FINISHED   AGE
+job-revenue-rollup-a4b6e   nightly                                       9m29s
+$ kubectl -n shop get workloads -o jsonpath='{.items[0].status.conditions[-1:].message}'
+couldn't assign flavors to pod set main: insufficient quota for cpu in flavor default-flavor, previously considered podsets requests (0) + current podset request (4) > maximum capacity (1)
+
+$ kubectl get clusterqueue nightly-batch -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources}'
+[{"name":"cpu","nominalQuota":"1"},{"name":"memory","nominalQuota":"1Gi"}]
+
+Diagnosis: the Job asks for 2 CPU x 2 pods = 4; the ClusterQueue's nominal quota is 1.
+The Job is not failing — it is Suspended, waiting for capacity that will never arrive
+at this quota. 'kubectl get pods' shows nothing, which is why teams miss it.

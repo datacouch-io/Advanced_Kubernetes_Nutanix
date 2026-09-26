@@ -1,0 +1,111 @@
+Advanced Kubernetes (Nutanix) — Lab 27 (Module 11) — Tenant quota governance evidence
+Captured 2026-09-25 15:50 IST. kind cluster, Kubernetes 1.37.0, Flux 2.9.5,
+Gitea 1.22 running in-cluster as the Git source. All output is real.
+=====================================================================================
+
+### 1. Flux is fed by a Git server inside the cluster — nothing public
+$ flux get sources git
+NAME   	REVISION          	SUSPENDED	READY	MESSAGE                                           
+tenants	main@sha1:e70e20a3	False    	True 	stored artifact for revision 'main@sha1:e70e20a3'	
+$ kubectl -n flux-system get gitrepository tenants -o jsonpath='{.spec.url}'
+http://gitea.git-server.svc.cluster.local:3000/labadmin/tenants.git
+
+### 2. Flux delivered the tenant namespace and its ResourceQuota
+{"count/deployments.apps":"5","limits.cpu":"4","limits.memory":"4Gi","requests.cpu":"2","requests.memory":"2Gi"}
+$ kubectl get ns team-a --show-labels
+team-a   Active   7m21s   kubernetes.io/metadata.name=team-a,kustomize.toolkit.fluxcd.io/name=tenants,kustomize.toolkit.fluxcd.io/namespace=flux-system,tenant=team-a
+
+### 3. A quota WITHOUT a LimitRange: the workload vanishes
+$ kubectl -n team-a create deployment web --image=nginx:1.27
+$ kubectl -n team-a get pods
+No resources found in team-a namespace.
+$ kubectl -n team-a get deploy web
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    0/1     0            0           12s
+
+The Deployment reports 0/1 and there is no Pod to describe. The error is on the ReplicaSet:
+$ kubectl -n team-a get events --field-selector reason=FailedCreate
+(combined from similar events): Error creating: pods "web-bd64fdf85-gs5t5" is forbidden: exceeded quota: team-a-quota, requested: limits.cpu=500m,limits.memory=512Mi, used: limits.cpu=4,limits.memory=4Gi, limited: limits.cpu=4,limits.memory=4Gi
+
+-> This is the 'missing default silently breaks quota' failure. Once a quota covers
+   cpu/memory, every Pod must state requests and limits, and nothing in a stock
+   Deployment does.
+
+### 4. The LimitRange, delivered by Flux, supplies the defaults
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: team-a-defaults
+  namespace: team-a
+spec:
+  limits:
+    - type: Container
+      # what a container gets when it asks for nothing
+      defaultRequest: { cpu: 100m, memory: 128Mi }
+      default:        { cpu: 500m, memory: 512Mi }
+      # and the ceiling it may not exceed
+      max:            { cpu: "1",  memory: 1Gi }
+
+$ flux reconcile kustomization tenants --with-source   # then the same Deployment, untouched
+$ kubectl -n team-a get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+web-67b4666ff-7rj5m   1/1     Running   0          18s
+$ kubectl -n team-a get pod -l app=web -o jsonpath='{.items[0].spec.containers[0].resources}'
+{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}
+
+-> Nothing about the Deployment changed. The LimitRange filled in what quota demanded.
+
+### 5. Quota exhaustion — and it stops far short of where you'd expect
+$ kubectl -n team-a scale deploy/web --replicas=25
+$ kubectl -n team-a get deploy web
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    8/25    8            8           104s
+
+$ kubectl -n team-a describe resourcequota team-a-quota
+Namespace:              team-a
+Resource                Used  Hard
+--------                ----  ----
+count/deployments.apps  1     5
+limits.cpu              4     4
+limits.memory           4Gi   4Gi
+requests.cpu            800m  2
+requests.memory         1Gi   2Gi
+
+$ kubectl -n team-a get events --field-selector reason=FailedCreate
+(combined from similar events): Error creating: pods "web-bd64fdf85-gs5t5" is forbidden: exceeded quota: team-a-quota, requested: limits.cpu=500m,limits.memory=512Mi, used: limits.cpu=4,limits.memory=4Gi, limited: limits.cpu=4,limits.memory=4Gi
+
+-> It stopped at 8 replicas, not the 20 that requests.cpu=2 would suggest.
+   The binding constraint is limits.cpu=4, consumed by the LimitRange's DEFAULT
+   limit of 500m per container: 4000m / 500m = 8.
+   The overcommit ratio chosen in the LimitRange, not the request, decided how
+   many Pods the tenant could run.
+
+### 6. Per-cluster quota derived from a fleet budget
+Fleet budget for team-a: 20 CPU. cluster-01 carries 60%, cluster-02 carries 40%.
+The Git manifest holds variables, not numbers:
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: team-a-quota, namespace: team-a }
+spec:
+  hard:
+    # rendered per cluster from that cluster's share of the fleet budget
+    requests.cpu: "${TEAM_A_CPU}"
+    requests.memory: "${TEAM_A_MEM}"
+    limits.cpu: "${TEAM_A_CPU_LIMIT}"
+    limits.memory: "${TEAM_A_MEM_LIMIT}"
+    count/deployments.apps: "5"
+
+Each cluster holds its own share as a ConfigMap, and the Kustomization substitutes it:
+$ kubectl -n flux-system get cm cluster-budget -o jsonpath='{.data}'
+{"TEAM_A_CPU":"12","TEAM_A_CPU_LIMIT":"24","TEAM_A_MEM":"12Gi","TEAM_A_MEM_LIMIT":"24Gi"}
+
+--- rendered on cluster-01 (60% share) ---
+{"count/deployments.apps":"5","limits.cpu":"24","limits.memory":"24Gi","requests.cpu":"12","requests.memory":"12Gi"}
+git revision: main@sha1:cca67164ae866fbe5f7b8271139d2b1368662868
+
+--- swap in cluster-02's share (40%) and reconcile: SAME commit ---
+{"count/deployments.apps":"5","limits.cpu":"16","limits.memory":"16Gi","requests.cpu":"8","requests.memory":"8Gi"}
+git revision: main@sha1:cca67164ae866fbe5f7b8271139d2b1368662868
+
+-> Identical Git revision, different enforced quota. The fleet budget lives in the
+   cluster, the policy lives in Git, and no per-cluster branch or directory is needed.

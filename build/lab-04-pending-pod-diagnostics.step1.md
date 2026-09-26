@@ -26,7 +26,7 @@ You'll create a GKE cluster, then deliberately create four Pods that each *can't
 
 - **Where you'll work:** in a **terminal** on your own machine.
 - **Tools you need:** `gcloud`, `kubectl`, and the `gke-gcloud-auth-plugin`.
-- **Account:** a GCP project with billing enabled and the Kubernetes Engine API turned on. (See the [Setup Environment Guide](00-setup-environment-guide.md).)
+- **Account:** a GCP project with billing enabled and the Kubernetes Engine API turned on. (See the [Setup Environment Guide](../00-setup-environment-guide.md).)
 
 > **Nutanix note.** Every failure here — `Insufficient cpu`, `untolerated taint`, affinity mismatch, unbound PVC — is core `kube-scheduler` behaviour, byte-for-byte identical on NKE, `kind`, and every conformant cluster; the diagnosis commands don't change at all. The only platform-specific bit is the *resolution* for the resource case: GKE's autoscaler adds a node, whereas on NKE you'd scale the node pool through Prism/NKE. We run this on GKE to show that cloud twist.
 
@@ -62,7 +62,7 @@ kubectl get nodes -o custom-columns='NODE:.metadata.name,CPU_ALLOC:.status.alloc
 
 **What you should see:** two `Ready` nodes, each reporting **`940m` allocatable CPU** — even though an `e2-medium` nominally has **2** vCPUs.
 
-![GKE nodes and their allocatable capacity](artifacts/lab-04/screenshots/01-cluster-allocatable.png)
+![GKE nodes and their allocatable capacity](../artifacts/lab-04/screenshots/01-cluster-allocatable.png)
 
 **What this means:** GKE reserves over half of each node's CPU for the system and kubelet. The scheduler fits Pods into **allocatable**, not raw capacity — and that gap is what makes the next scenario trivial to trigger.
 
@@ -97,7 +97,7 @@ kubectl describe pod -l app=hog | sed -n '/Events:/,$p'
 
 **What you should see:** the Pod is `Pending`, and the event reads `FailedScheduling` → **`0/2 nodes are available: 2 Insufficient cpu.`** There's often a second event from `cluster-autoscaler`: `NotTriggerScaleUp`.
 
-![Insufficient cpu: 0/2 nodes available](artifacts/lab-04/screenshots/02-insufficient-cpu.png)
+![Insufficient cpu: 0/2 nodes available](../artifacts/lab-04/screenshots/02-insufficient-cpu.png)
 
 **What this means:** neither node has 5 cores of *allocatable* CPU free (each has only `940m`), so both are filtered out. The `NotTriggerScaleUp` line means the autoscaler looked at this Pod but this cluster has no autoscaling enabled — so it stays `Pending`.
 
@@ -138,7 +138,7 @@ kubectl describe pod -l app=picky | sed -n '/Events:/,$p'
 
 **What you should see:** `FailedScheduling` → **`0/2 nodes are available: 2 node(s) didn't match Pod's node affinity/selector.`**
 
-![node affinity/selector mismatch](artifacts/lab-04/screenshots/03-affinity-mismatch.png)
+![node affinity/selector mismatch](../artifacts/lab-04/screenshots/03-affinity-mismatch.png)
 
 **What this means:** no node carries the `disktype=ssd` label, so both are filtered out.
 
@@ -166,7 +166,7 @@ kubectl describe pod -l app=worker | sed -n '/Events:/,$p'
 
 **What you should see:** `FailedScheduling` → **`0/2 nodes are available: 2 node(s) had untolerated taint(s).`**
 
-![untolerated taint](artifacts/lab-04/screenshots/04-untolerated-taint.png)
+![untolerated taint](../artifacts/lab-04/screenshots/04-untolerated-taint.png)
 
 **What this means:** the nodes have capacity and match everything else — but the `dedicated=analytics:NoSchedule` taint actively repels any Pod that doesn't carry a matching toleration.
 
@@ -217,7 +217,7 @@ kubectl describe pod needs-storage | sed -n '/Events:/,$p'
 
 **What you should see:** the PVC stays `Pending`, and the Pod's event reads `FailedScheduling` → **`0/2 nodes are available: pod has unbound immediate PersistentVolumeClaims.`**
 
-![unbound PVC](artifacts/lab-04/screenshots/05-unbound-pvc.png)
+![unbound PVC](../artifacts/lab-04/screenshots/05-unbound-pvc.png)
 
 **What this means:** nothing can provision a volume for the `does-not-exist` class, so the PVC never binds — and the scheduler won't place a Pod whose volume can't be bound.
 
@@ -252,7 +252,118 @@ kubectl get pvc data -w      # Bound; the Pod schedules and runs
 
 ---
 
-## Step 6 — Confirm all four are Running, then clean up
+## Step 6 — Simulate a twenty-node fleet with KWOK
+
+**Goal:** test scheduler and node-controller behaviour at a size you cannot build on a laptop.
+
+The four Pending causes above each needed one real node. Some questions need twenty — *does my
+topology spread actually spread? what happens to placement when I cordon a rack?* **KWOK** answers
+them by creating nodes that the API server and scheduler treat as real, with no kubelet and no
+containers behind them.
+
+```bash
+KWOK_VER=v0.8.0
+kubectl apply -f https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VER}/kwok.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VER}/stage-fast.yaml
+```
+
+Then create nodes as plain objects — annotate them `kwok.x-k8s.io/node: fake`, label `type: kwok`,
+and declare whatever capacity you want to test against (8 vCPU / 16Gi each here). Create twenty.
+
+**What you should see:**
+
+```
+NAME                     STATUS  ROLES          VERSION   CONTAINER-RUNTIME
+kwok-lab-control-plane   Ready   control-plane  v1.37.0   containerd://2.3.4
+kwok-node-0              Ready   agent          fake      kwok-v0.8.0
+kwok-node-1              Ready   agent          fake      kwok-v0.8.0
+...
+fake nodes : 20
+real nodes : 1
+```
+
+`kubeletVersion: fake` and `CONTAINER-RUNTIME: kwok-v0.8.0` are the tell.
+
+Now schedule against them — Pods need a toleration for `kwok.x-k8s.io/node` and a
+`nodeSelector: {type: kwok}`:
+
+```bash
+kubectl scale deploy/fleet-web --replicas=100
+kubectl get pods -o wide | awk '{print $7}' | sort | uniq -c
+```
+
+```
+   5 kwok-node-0
+   5 kwok-node-1
+   5 kwok-node-10
+   ...
+total Running : 100 across 20 nodes
+```
+
+**What this means.** One hundred Pods, spread evenly over twenty nodes, on a laptop running a single
+real container. Every scheduling decision here is the genuine scheduler making genuine choices — only
+the kubelet is fictional.
+
+**Cordon one and watch the node-controller respond:**
+
+```bash
+kubectl cordon kwok-node-5
+kubectl get node kwok-node-5 -o jsonpath='{.spec.unschedulable} {.spec.taints}'
+```
+
+```
+unschedulable = true
+taint added   = node.kubernetes.io/unschedulable:NoSchedule
+pods already there, untouched = 5
+```
+
+Cordoning adds a taint and sets `unschedulable`; it stops **new** placement and evicts nothing. That
+distinction is the one people get wrong under pressure.
+
+---
+
+### Why a failed node takes five minutes to fail over
+
+Ask any Pod what tolerations it has — including ones you never wrote:
+
+```bash
+kubectl get pod <any-pod> -o jsonpath='{.spec.tolerations}'
+```
+
+```
+node.kubernetes.io/not-ready     op=Exists effect=NoExecute tolerationSeconds=300
+node.kubernetes.io/unreachable   op=Exists effect=NoExecute tolerationSeconds=300
+```
+
+**Kubernetes injects these into every Pod.** When a node goes unreachable, workloads sit there for
+**300 seconds** before eviction — and that delay is neither the scheduler being slow nor a controller
+backoff, which is what most people assume. It is a default toleration, and it is editable:
+
+```yaml
+tolerations:
+  - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 10 }
+```
+
+Shorten it and failover happens in seconds. Shorten it too far and a node with a brief network blip
+sheds its whole workload for nothing. That trade-off is the discussion worth having.
+
+> ### ⚠️ Gotcha — KWOK will not let you fail a node, and this costs people an afternoon
+>
+> **Measured on KWOK v0.8.0:**
+>
+> - `kubectl patch node ... --subresource=status` to set `Ready=False` is **reverted within
+>   seconds** — the node reports `Ready=True` again. Adding `kwok.x-k8s.io/status: custom` did not
+>   change this, and neither did recreating the node with `Ready=False` in its manifest.
+> - A `NoExecute` taint applied with `kubectl taint` is **removed by the kwok-controller**. It is
+>   present at t+0 and gone shortly after. Pods never evict.
+>
+> The kwok-controller owns the node object and continuously reconciles it. **KWOK simulates a fleet
+> of healthy nodes extremely well; it is not a node-failure injector.** To exercise eviction, drive
+> it with a KWOK `Stage` resource, or take a real `kind` worker down with `docker stop`.
+
+---
+
+## Step 7 — Confirm all four are Running, then clean up
 
 **Goal:** verify every seeded `Pending` Pod is now `Running`.
 
@@ -262,7 +373,7 @@ kubectl get pods -o wide
 
 **What you should see:** `hog`, `picky`, `worker`, and `needs-storage` all `Running`, and `kubectl get pvc data` shows `Bound`.
 
-![All four scenarios resolved to Running](artifacts/lab-04/screenshots/06-all-running.png)
+![All four scenarios resolved to Running](../artifacts/lab-04/screenshots/06-all-running.png)
 
 **Delete the cluster** (this is the only real cost in the lab):
 
@@ -284,13 +395,25 @@ gcloud container clusters list      # verify it's gone
 | An unbound PVC blocks scheduling | 5 | `unbound immediate PersistentVolumeClaims` |
 | Each fix moves the Pod Pending → Running | 2–5 watches + 6 all Running |
 | Cloud autoscaler is an alternate fix for the resource case | 2 cloud twist |
+| KWOK simulates a fleet the scheduler treats as real | 6 | 20 fake nodes, 100 Pods spread, 1 real container |
+| Cordon stops new placement and evicts nothing | 6 | `unschedulable=true` + NoSchedule taint, 5 Pods stayed |
+| The 5-minute failover delay is an injected toleration | 6 | `not-ready`/`unreachable` `tolerationSeconds=300` on every Pod |
+| KWOK owns the node object and reverts failure injection | 6 gotcha | `Ready=False` patch reverted; NoExecute taint removed |
+
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-04/screenshots/`](artifacts/lab-04/screenshots/) (6 images), and a full command transcript is in [`artifacts/lab-04/evidence/lab-04-pending-pod-diagnostics.txt`](artifacts/lab-04/evidence/lab-04-pending-pod-diagnostics.txt).
+The KWOK simulated-fleet run is captured in
+[`artifacts/lab-04/evidence/lab-04-kwok-simulated-fleet.txt`](../artifacts/lab-04/evidence/lab-04-kwok-simulated-fleet.txt)
+— 64 lines from 2026-09-25 (Kubernetes 1.37.0, KWOK v0.8.0), including the 20-node fleet, the
+100-Pod spread, the cordon response, the injected 300s tolerations, and both things KWOK refused to do.
+
+### Original evidence
+
+Real screenshots for this lab are in [`artifacts/lab-04/screenshots/`](../artifacts/lab-04/screenshots/) (6 images), and a full command transcript is in [`artifacts/lab-04/evidence/lab-04-pending-pod-diagnostics.txt`](../artifacts/lab-04/evidence/lab-04-pending-pod-diagnostics.txt).
 
 ---
 
 ---
 
-**Next:** [Lab 5 — Autopilot vs Standard, Private Clusters & Release Channels](lab-05-cluster-architecture.md)
+**Next:** [Lab 5 — Autopilot vs Standard, Private Clusters & Release Channels](../additional/further-labs/lab-05-cluster-architecture.md)

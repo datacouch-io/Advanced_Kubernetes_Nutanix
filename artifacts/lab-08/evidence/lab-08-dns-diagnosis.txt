@@ -1,0 +1,100 @@
+Advanced Kubernetes (Nutanix) — Lab 8 (Module 4) — DNS diagnosis evidence
+Captured 2026-09-25 14:19 IST on a 3-node kind cluster, Cilium 1.20.1, kube-proxy replaced, Hubble Relay enabled.
+=========================================================================
+
+### 1. The resolver every Pod is handed
+$ kubectl exec client -- cat /etc/resolv.conf
+search default.svc.cluster.local svc.cluster.local cluster.local
+nameserver 10.96.0.10
+options ndots:5
+
+### 2. What ONE 'curl http://example.com' actually asks CoreDNS
+(requires an L7 DNS-aware CiliumNetworkPolicy; without one Hubble shows only UDP:53)
+$ hubble observe --pod client --protocol dns --last 40 | grep 'DNS Query'
+example.com.default.svc.cluster.local. A)
+example.com.default.svc.cluster.local. AAAA)
+example.com.svc.cluster.local. A)
+example.com.svc.cluster.local. AAAA)
+example.com.cluster.local. AAAA)
+example.com.cluster.local. A)
+example.com. AAAA)
+example.com. A)
+
+-> 4 name variants x 2 address families = 8 queries. 6 of them are guaranteed NXDOMAIN.
+
+### 3. The classic incomplete egress policy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: client-egress
+spec:
+  endpointSelector:
+    matchLabels:
+      run: client
+  egress:
+    # "I allowed the client to reach backend." Looks complete. It isn't.
+    - toEndpoints:
+        - matchLabels:
+            app: backend
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+
+### 4. Symptom: the NAME fails, the IP works
+$ kubectl exec client -- curl --max-time 8 http://backend
+exit=0
+$ kubectl exec client -- curl --max-time 8 http://10.244.2.157
+http=200
+
+### 5. Hubble names the cause
+$ hubble observe --pod client --verdict DROPPED --to-label k8s-app=kube-dns --last 6
+Sep 25 08:47:17.275: default/client:56241  <> kube-system/coredns-559f6c778d-rq5c4:53  policy-verdict:none TRAFFIC_DIRECTION_UNKNOWN DENIED (UDP)
+Sep 25 08:47:17.275: default/client:56241  <> kube-system/coredns-559f6c778d-rq5c4:53  Policy denied DROPPED (UDP)
+Sep 25 08:47:19.778: default/client:56241  <> kube-system/coredns-559f6c778d-rq5c4:53  policy-verdict:none TRAFFIC_DIRECTION_UNKNOWN DENIED (UDP)
+Sep 25 08:47:19.778: default/client:56241  <> kube-system/coredns-559f6c778d-rq5c4:53  Policy denied DROPPED (UDP)
+Sep 25 08:47:19.778: default/client:45744  <> kube-system/coredns-559f6c778d-sg8b9:53  policy-verdict:none TRAFFIC_DIRECTION_UNKNOWN DENIED (UDP)
+Sep 25 08:47:19.778: default/client:45744  <> kube-system/coredns-559f6c778d-sg8b9:53  Policy denied DROPPED (UDP)
+
+NOTE: '--port 53' matches nothing here — these flows are logged with unknown direction.
+      Filter with --to-label k8s-app=kube-dns instead.
+NOTE: the gap between retry bursts is ~2.5s. Two of those is the 5-second DNS stall.
+
+### 6. The fix — the egress rule everyone forgets
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: client-egress
+spec:
+  endpointSelector:
+    matchLabels:
+      run: client
+  egress:
+    # the rule everyone writes
+    - toEndpoints:
+        - matchLabels:
+            app: backend
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # the rule everyone forgets
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+### 7. Same curl, by name
+http=200
+$ hubble observe --pod client --protocol dns --last 4
+Sep 25 08:50:02.052: default/client:36551  -> kube-system/coredns-559f6c778d-sg8b9:53  dns-request proxy FORWARDED (DNS Query backend.default.svc.cluster.local. AAAA)
+Sep 25 08:50:02.052: default/client:53670  -> kube-system/coredns-559f6c778d-rq5c4:53  dns-request proxy FORWARDED (DNS Query backend.default.svc.cluster.local. A)
+Sep 25 08:50:02.056: default/client:36551  <- kube-system/coredns-559f6c778d-sg8b9:53  dns-response proxy FORWARDED (DNS Answer  TTL: 4294967295 (Proxy backend.default.svc.cluster.local. AAAA))
+Sep 25 08:50:02.056: default/client:53670  <- kube-system/coredns-559f6c778d-rq5c4:53  dns-response proxy FORWARDED (DNS Answer "10.96.201.151" TTL: 30 (Proxy backend.default.svc.cluster.local. A))

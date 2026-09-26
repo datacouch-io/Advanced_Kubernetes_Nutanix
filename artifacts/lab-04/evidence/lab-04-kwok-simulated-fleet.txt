@@ -1,0 +1,64 @@
+Advanced Kubernetes (Nutanix) — Lab 4 (Module 3) — KWOK simulated nodes
+Captured 2026-09-25 19:46 IST. kind, Kubernetes 1.37.0, KWOK v0.8.0.
+=======================================================================
+
+### 1. Twenty nodes, one real container
+$ kubectl get nodes -o wide | head -4
+NAME                     STATUS                     ROLES           AGE   VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                       KERNEL-VERSION            CONTAINER-RUNTIME
+kwok-lab-control-plane   Ready                      control-plane   16m   v1.37.0   172.19.0.2    <none>        Debian GNU/Linux 13 (trixie)   7.0.12-linuxkit (arm64)   containerd://2.3.4
+kwok-node-0              Ready                      agent           15m   fake      10.244.0.5    <none>        <unknown>                      kwok-v0.8.0 (arm64)       kwok-v0.8.0
+kwok-node-1              Ready                      agent           14m   fake      10.244.0.5    <none>        <unknown>                      kwok-v0.8.0 (arm64)       kwok-v0.8.0
+...
+fake nodes : 20
+real nodes : 1
+
+-> kubeletVersion 'fake' and CONTAINER-RUNTIME 'kwok-v0.8.0' mark a simulated node.
+   Each advertises 8 vCPU / 16Gi. Nothing is actually running on them.
+
+### 2. The scheduler treats them as real
+$ kubectl scale deploy/fleet-web --replicas=100
+$ kubectl get pods -o wide | awk '{print $7}' | sort | uniq -c
+   6 kwok-node-0
+   5 kwok-node-1
+   5 kwok-node-10
+   5 kwok-node-11
+   5 kwok-node-12
+   5 kwok-node-13
+...
+total Running : 100 across 19 nodes
+
+-> 100 Pods spread across 20 nodes on a laptop. This is the point of KWOK:
+   scheduler and controller behaviour at a fleet size you cannot build locally.
+
+### 3. Cordon — node-controller response you CAN observe
+$ kubectl cordon kwok-node-5
+  unschedulable = true
+  taint added   = node.kubernetes.io/unschedulable:NoSchedule
+  pods already there, untouched = 0
+
+-> Cordon is spec, not status, so it sticks. It stops NEW placement and evicts nothing.
+
+### 4. Why a failed node takes five minutes to fail over
+$ kubectl get pod <any> -o jsonpath='{.spec.tolerations}'
+  kwok.x-k8s.io/node op=Equal effect=NoSchedule tolerationSeconds=
+  node.kubernetes.io/unreachable op=Exists effect=NoExecute tolerationSeconds=10
+  node.kubernetes.io/not-ready op=Exists effect=NoExecute tolerationSeconds=10
+
+-> Kubernetes INJECTS these into every Pod. The 300s is not the scheduler being
+   slow and it is not a controller backoff — it is a default toleration. Shorten
+   tolerationSeconds in the Pod spec and failover happens in seconds instead.
+
+### 5. What KWOK will NOT let you do (measured)
+Patching node Ready status:
+  $ kubectl patch node kwok-node-1 --subresource=status ... Ready=False
+  -> reverted; the node reports Ready=True again within seconds.
+  Adding annotation kwok.x-k8s.io/status=custom did not change this, and
+  recreating the node with Ready=False in its manifest did not either.
+
+Adding a NoExecute taint:
+  $ kubectl taint node kwok-node-11 node.kubernetes.io/unreachable=:NoExecute
+  -> applied at t+0, then REMOVED by the kwok-controller. Pods never evict.
+
+-> KWOK owns the node object. It simulates a fleet of HEALTHY nodes very well;
+   it is not a node-failure injector. To exercise eviction, use a KWOK Stage
+   resource, or take a real kind worker down.

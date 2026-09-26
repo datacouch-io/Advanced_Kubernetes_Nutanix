@@ -2,7 +2,7 @@
 
 **Restructured 2026-09-25 to the client's three-day outline** (`Kubernetes_Advanced_3-Day_Outline.docx`).
 
-Three scheduled days of 11 labs, an optional additional day of 3, and 12 further labs held in reserve.
+Three scheduled days of 13 labs, an optional additional day of 3, and 12 further labs held in reserve.
 Every lab is a self-contained student guide — orientation → step-by-step with real screenshots →
 "what you learned" → evidence — and ships with a matching `.docx` beside it.
 
@@ -13,9 +13,9 @@ the lab needs control-plane, CNI, multi-cluster or bare-metal access.
 |---|---|---|
 | [`day-1-internals-and-networking/`](day-1-internals-and-networking/) | Modules 1–4 | 4 |
 | [`day-2-stateful-storage-and-exposure/`](day-2-stateful-storage-and-exposure/) | Modules 5–8 | 4 |
-| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 | 3 |
+| [`day-3-gitops-fleet-and-governance/`](day-3-gitops-fleet-and-governance/) | Modules 9–11 | 5 |
 | [`additional/optional-day-control-plane-and-war-room/`](additional/optional-day-control-plane-and-war-room/) | Modules 12–14 (optional day) | 3 |
-| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 12 |
+| [`additional/further-labs/`](additional/further-labs/) | Not in this outline | 13 |
 
 ---
 
@@ -45,8 +45,10 @@ labs back to back. No separate lab file.*
 | Module | Topic | Lab | What the lab proves | Platform |
 |---|---|---|---|---|
 | 9 | GitOps with Flux CD | [GitOps Delivery with Flux](day-3-gitops-fleet-and-governance/lab-15-flux.md) | Deliver from Git; manual drift is reverted automatically | GKE |
-| 10 | Fleet Management & Multi-Cluster Ops | [Fleet Registration & Staged Rollout](day-3-gitops-fleet-and-governance/lab-16-fleet.md) | One commit rolls out across a fleet; drift on one cluster is corrected | kind ×3 |
-| 11 | Multi-Tenancy, Quotas & Limits | [Multi-Tenant Quota with Kueue](day-3-gitops-fleet-and-governance/lab-17-kueue.md) | A quota-blocked tenant borrows idle capacity via a cohort | GKE |
+| 10 | Fleet Management & Multi-Cluster Ops | [Two Clusters as One Fleet (Flux)](day-3-gitops-fleet-and-governance/lab-29-flux-fleet-two-clusters.md) | One repo, per-cluster overlays, canary→production rings gated by a merge | kind ×2 |
+| 10 | *(alternative)* | [Fleet Registration & Staged Rollout](day-3-gitops-fleet-and-governance/lab-16-fleet.md) | The same job with Rancher Fleet | kind ×3 |
+| 11 | Multi-Tenancy, Quotas & Limits | [Tenant Quota Governance](day-3-gitops-fleet-and-governance/lab-27-tenant-quota-governance.md) | Quota + LimitRange via Flux; exhaustion diagnosed; per-cluster quota from a fleet budget | kind |
+| 11 | *(continued)* | [Multi-Tenant Quota with Kueue](day-3-gitops-fleet-and-governance/lab-17-kueue.md) | A quota-blocked tenant borrows idle capacity via a cohort | GKE |
 
 *End-of-day diagnostic scenario — a Flux-delivered tenant change that fails to reconcile, then hits
 quota exhaustion — combines the Module 9 and Module 11 labs.*
@@ -57,7 +59,7 @@ quota exhaustion — combines the Module 9 and Module 11 labs.*
 |---|---|---|---|---|
 | 12 | etcd — the cluster's source of truth | [etcd Quota Alarm & Recovery](additional/optional-day-control-plane-and-war-room/lab-03-etcd-quota-recovery.md) | Trip the etcd NOSPACE alarm, then compact/defrag/disarm back to writable | kind |
 | 13 | Extending Kubernetes — CRDs & Operators | [Operators, Finalizers & Stuck Deletions](additional/optional-day-control-plane-and-war-room/lab-06-operators-finalizers.md) | Free a resource stuck `Terminating` by fixing its finalizer | GKE |
-| 14 | Capstone — Production War-Room | [Capstone: Production War-Room](additional/optional-day-control-plane-and-war-room/lab-26-capstone.md) | Diagnose and heal six simultaneous fault domains; write the postmortem | GKE |
+| 14 | Capstone — Production War-Room | [Capstone: Production War-Room](additional/optional-day-control-plane-and-war-room/lab-26-capstone.md) | Six fault domains matching the outline — API pressure, etcd, operator, scheduling, CoreDNS/NetworkPolicy, Kueue | kind |
 
 ## Further Labs — not in this outline
 
@@ -66,7 +68,7 @@ Twelve tested labs held in reserve. Full table in
 
 Cluster architecture · scale knee-point · Istio multi-cluster mesh · Kyverno admission control ·
 DRA · distributed training · HPA/VPA · inference autoscaling · workload identity & binary
-authorization · Falco · agentic guardrails · Chaos Mesh.
+authorization · Falco · agentic guardrails · Chaos Mesh · a GKE capstone variant.
 
 ---
 

@@ -1,0 +1,58 @@
+Advanced Kubernetes (Nutanix) — Lab 6 (Module 13) — a reconcile hot loop
+Captured 2026-09-25 20:00 IST. kind, Kubernetes 1.37.0, Flux 2.9.5,
+metrics-server, Gitea 1.22 in-cluster. All output real.
+========================================================================
+
+### The setup: two controllers, one field
+  Git (via a Flux Kustomization, interval 20s) declares:  spec.replicas: 2
+  A HorizontalPodAutoscaler declares:                     minReplicas: 5
+  Neither is wrong. Neither yields.
+
+### 1. The oscillation, sampled every 5 seconds
+  t+5    deploy=2  hpa=5
+  t+15   deploy=5  hpa=5      <- HPA wins
+  t+20   deploy=2  hpa=5      <- Flux wins
+  t+30   deploy=5  hpa=5
+  t+65   deploy=2  hpa=5
+  t+75   deploy=5  hpa=5
+  t+85   deploy=2  hpa=5
+  t+90   deploy=5  hpa=5
+
+### 2. Where the churn actually shows: the event COUNT field
+$ kubectl -n shop get events -o custom-columns='COUNT:.count,REASON:.reason,MSG:.message'
+1       ScalingReplicaSet   Scaled up replica set api-97fd78bc6 from 0 to 2
+9       ScalingReplicaSet   Scaled up replica set api-97fd78bc6 from 2 to 5
+9       ScalingReplicaSet   Scaled down replica set api-97fd78bc6 from 5 to 2
+1       ScalingReplicaSet   Scaled down replica set api-97fd78bc6 from 2 to 1
+
+-> Kubernetes AGGREGATES repeated events. A single line with count=9 is nine
+   scale-ups. Reading the event list without the count column hides the loop
+   entirely — it looks like two ordinary events.
+
+### 3. The part that makes this hard to find
+$ kubectl -n flux-system get kustomization app -o jsonpath='{.status.conditions}'
+  ready = True
+  msg   = Applied revision: main@sha1:a9bfee8a8d6d7546fc61ba7d00b90e4d5a98d245
+  hpa   = AbleToScale True, ScalingActive True
+
+-> BOTH controllers report success. Flux says 'Applied revision'. The HPA says it
+   is scaling normally. Neither is lying and neither can see the other. Nothing in
+   either status will ever tell you there is a fight.
+
+### 4. The fix: decide which controller owns the field
+  Remove spec.replicas from the Git manifest entirely and let the HPA own it.
+
+$ flux reconcile kustomization app --with-source
+  then, sampled every 5s for 75s:
+  deploy=5  hpa=5
+  deploy=5  hpa=5
+  deploy=5  hpa=5
+  ... stable at 5/5 throughout; the ScalingReplicaSet counts stopped advancing.
+
+### 5. GOTCHA found during the fix — a momentary drop to 1
+$ kubectl -n shop get events | grep -i scaling   (last two)
+
+-> Deleting spec.replicas does not mean 'leave it alone'. The field DEFAULTS to 1,
+   so the Deployment scaled 2 -> 1 before the HPA pulled it back to 5. On a busy
+   service that is a real capacity dip. Do it in a window, or keep the field and
+   tell the reconciler to ignore it instead of removing it.

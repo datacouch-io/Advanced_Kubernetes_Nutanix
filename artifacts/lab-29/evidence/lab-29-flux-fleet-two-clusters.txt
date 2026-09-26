@@ -1,0 +1,48 @@
+Advanced Kubernetes (Nutanix) — Lab 29 (Module 10) — a two-cluster fleet with Flux
+Captured 2026-09-25 19:26 IST. Two kind clusters (Kubernetes 1.37.0), Flux 2.9.5,
+Gitea 1.22 on fleet-01 exposed via NodePort so both clusters share ONE repository.
+=================================================================================
+
+### 1. One repository, two clusters, one revision
+kind-fleet-01    url=http://172.19.0.2:30300/labadmin/fleet.git
+                 revision=main@sha1:92c274bd937ca4913837533c319c2313513e6ef8
+kind-fleet-02    url=http://172.19.0.2:30300/labadmin/fleet.git
+                 revision=release@sha1:865170b6f1aa23599551df513c47b0aaf871350e
+
+### 2. Per-cluster overlays — same manifest, different render
+The manifest in Git holds variables, not values:
+    replicas: ${WEB_REPLICAS}
+    labels: { cluster: "${CLUSTER_NAME}", tier: "${CLUSTER_TIER}" }
+
+Each cluster carries its own identity as a ConfigMap, substituted at apply time:
+kind-fleet-01    {"CLUSTER_NAME":"fleet-01","CLUSTER_TIER":"canary","WEB_REPLICAS":"3","WEB_VERSION":"1.27-alpine"}
+kind-fleet-02    {"CLUSTER_NAME":"fleet-02","CLUSTER_TIER":"production","WEB_REPLICAS":"2","WEB_VERSION":"1.27-alpine"}
+
+Rendered result:
+kind-fleet-01    replicas=3 tier=canary cluster=fleet-01
+kind-fleet-02    replicas=2 tier=production cluster=fleet-02
+
+-> No per-cluster branch, no per-cluster directory, no copy-paste.
+
+### 3. Rollout rings — canary tracks main, production tracks release
+kind-fleet-01    branch=main      image=nginx:1.29-alpine
+kind-fleet-02    branch=release   image=nginx:1.29-alpine
+
+### 4. The staged upgrade, as it happened
+  t0  both rings          : nginx:1.27-alpine
+  t1  commit to main      : fleet-01 canary     -> nginx:1.29-alpine  ready 3/3
+                            fleet-02 production -> nginx:1.27-alpine  ready 2/2   (UNCHANGED)
+  t2  merge PR main->release
+                            fleet-02 production -> nginx:1.29-alpine  ready 2/2
+
+-> One commit reached the canary automatically. Production moved only when a human
+   merged the promotion PR. The gate is a branch, and it is auditable.
+
+### 5. Drift on ONE cluster
+$ kubectl --context kind-fleet-02 -n storefront scale deploy/web --replicas=7
+   immediately  : replicas=7
+   after Flux   : replicas=2   (back to what Git says for THIS cluster)
+   fleet-01     : replicas=3   (never touched)
+
+-> Drift is corrected per cluster, to that cluster's rendered value — not to a
+   fleet-wide constant. fleet-01 stays on 3 while fleet-02 returns to 2.

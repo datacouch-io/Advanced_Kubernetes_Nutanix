@@ -1,0 +1,78 @@
+Advanced Kubernetes (Nutanix) — Lab 12 (Module 6) — "the backup said Completed"
+Captured 2026-09-25 19:12 IST. kind, Kubernetes 1.37.0, Velero 1.18.2,
+S3 target: SeaweedFS in-cluster (see the note on MinIO image availability).
+Storage: rancher.io/local-path, the kind default. No CSI snapshot support.
+===========================================================================
+
+### 1. A database with data in it
+$ kubectl -n orders exec $POD -- psql -U postgres -c 'SELECT * FROM orders;'
+ id |   item   | qty 
+----+----------+-----
+  1 | widget   |  10
+  2 | sprocket |   3
+  3 | gasket   |  42
+(3 rows)
+
+
+### 2. Back it up the way most people first configure Velero
+$ velero backup create orders-nightly --include-namespaces orders --default-volumes-to-fs-backup=false
+
+Backup completed with status: Completed. You may check for more information using the commands `velero backup describe orders-nightly-demo` and `velero backup logs orders-nightly-demo`.
+
+$ velero backup get orders-nightly-demo
+NAME                  STATUS      ERRORS   WARNINGS   CREATED                         EXPIRES   STORAGE LOCATION   QUEUE POSITION   SELECTOR
+orders-nightly-demo   Completed   0        0          2026-09-25 19:12:26 +0530 IST   29d       default                             <none>
+
+phase      = Completed
+itemsBackedUp = 18 of 18
+errors     = 
+warnings   = 
+
+-> Completed. No errors. Every item accounted for.
+
+### 3. The disaster
+$ kubectl delete ns orders
+namespace "orders" deleted
+
+### 4. Restore
+$ velero restore create --from-backup orders-nightly-demo --wait
+
+Restore completed with status: Completed. You may check for more information using the commands `velero restore describe orders-nightly-demo-20260925191242` and `velero restore logs orders-nightly-demo-20260925191242`.
+
+orders-nightly-demo-20260925191242   orders-nightly-demo   Completed   2026-09-25 19:12:42 +0530 IST   2026-09-25 19:12:42 +0530 IST   0        1          2026-09-25 19:12:42 +0530 IST   <none>
+orders-nightly-fs-20260925190551     orders-nightly-fs     Completed   2026-09-25 19:05:51 +0530 IST   2026-09-25 19:05:51 +0530 IST   0        1          2026-09-25 19:05:51 +0530 IST   <none>
+
+### 5. Everything reports healthy
+$ kubectl -n orders get pvc,deploy
+NAME                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/pgdata   Bound    pvc-0a61df94-9cdd-408f-8b65-47072384cb56   1Gi        RWO            standard       <unset>                 10s
+
+NAME                        READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/orders-db   1/1     1            1           10s
+
+### 6. The moment that matters
+$ kubectl -n orders exec $POD -- psql -U postgres -c 'SELECT * FROM orders;'
+ERROR:  relation "orders" does not exist
+LINE 1: SELECT * FROM orders;
+                      ^
+command terminated with exit code 1
+
+-> Backup Completed. Restore Completed with 0 errors. PVC Bound. Pod 1/1 Running.
+   The table is gone. Velero backed up the Kubernetes OBJECTS — the PVC, the
+   Deployment, the Service — and never touched the DATA inside the volume.
+   Postgres found an empty data directory, ran initdb, and started cleanly.
+   Nothing anywhere reports a problem.
+
+### 7. Schedules, TTL and expiry
+$ velero schedule create orders-daily --schedule='0 2 * * *' --include-namespaces orders --ttl 72h
+NAME           STATUS    CREATED                         SCHEDULE    BACKUP TTL   LAST BACKUP   SELECTOR   PAUSED
+orders-daily   Enabled   2026-09-25 19:11:16 +0530 IST   0 2 * * *   72h0m0s      n/a           <none>     false
+
+$ kubectl -n velero get backup <name> -o jsonpath='{.spec.ttl} {.status.expiration}'
+ttl        = 720h0m0s
+completed  = 2026-09-25T13:42:26Z
+expiration = 2026-10-25T13:42:26Z
+
+-> TTL is set at backup creation and stamped onto the object as an absolute
+   expiration. Velero's gc-controller deletes the backup AND its data when that
+   time passes. Changing a Schedule's --ttl does not re-date backups already taken.

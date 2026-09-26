@@ -1,0 +1,57 @@
+Advanced Kubernetes (Nutanix) — Lab 15 (Module 9) — local Git source + broken-manifest diagnosis
+Captured 2026-09-25 17:03 IST. kind, Kubernetes 1.37.0, Flux 2.9.5, Gitea 1.22 in-cluster.
+No public repository is involved at any point.
+===============================================================================================
+
+### 1. The source is inside the cluster
+$ kubectl -n flux-system get gitrepository shop-config -o jsonpath='{.spec.url}'
+http://gitea.git-server.svc.cluster.local:3000/labadmin/shop-config.git
+$ flux get sources git
+NAME       	REVISION          	SUSPENDED	READY	MESSAGE                                           
+shop-config	main@sha1:3aacd02d	False    	True 	stored artifact for revision 'main@sha1:3aacd02d'	
+
+### 2. Flux applied the app from it
+$ flux get kustomizations
+NAME       	REVISION          	SUSPENDED	READY	MESSAGE                              
+shop-config	main@sha1:3aacd02d	False    	True 	Applied revision: main@sha1:3aacd02d	
+$ kubectl -n shop get deploy
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+storefront   4/4     4            4           6m3s
+
+### 3. Drift — delete what Flux owns
+$ kubectl -n shop delete deploy storefront
+No resources found in shop namespace.
+   ...waiting for reconciliation...
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+storefront   4/4     4            4           1s
+-> restored without anyone running kubectl apply.
+
+### 4. Break a manifest: 'replicas: two'
+$ flux get kustomizations
+NAME       	REVISION          	SUSPENDED	READY	MESSAGE                                                                                                                                                                                 
+shop-config	main@sha1:3aacd02d	False    	False	Deployment/shop/storefront dry-run failed: failed to create typed patch object (shop/storefront; apps/v1, Kind=Deployment): .spec.replicas: expected numeric (int or float), got string	
+           	                  	         	     	                                                                                                                                                                                       	
+
+$ kubectl -n flux-system get kustomization shop-config -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}'
+Deployment/shop/storefront dry-run failed: failed to create typed patch object (shop/storefront; apps/v1, Kind=Deployment): .spec.replicas: expected numeric (int or float), got string
+
+
+### 5. The part that matters: production never moved
+$ kubectl -n shop get deploy storefront
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+storefront   4/4     4            4           5m10s
+
+$ kubectl -n flux-system get kustomization shop-config -o jsonpath='...Revision'
+lastApplied   = main@sha1:3aacd02d043fb30c41b72cd115174af83acda1c3
+lastAttempted = main@sha1:2f0c08ae100d760e54472bb99e8fb9499d024df1
+
+-> Flux dry-runs before applying. The bad commit was refused, the last good
+   revision stayed live, and the two revision fields tell you exactly that.
+
+### 6. Fix and recover
+NAME       	REVISION          	SUSPENDED	READY	MESSAGE                              
+shop-config	main@sha1:16b6d523	False    	True 	Applied revision: main@sha1:16b6d523	
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+storefront   4/4     4            4           5m19s
+lastApplied   = main@sha1:16b6d5234519a9723ac999b783e5b8184203d936
+lastAttempted = main@sha1:16b6d5234519a9723ac999b783e5b8184203d936

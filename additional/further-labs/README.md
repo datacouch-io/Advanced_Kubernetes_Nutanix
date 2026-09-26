@@ -1,6 +1,6 @@
 # Further Labs — not scheduled in this delivery
 
-Twelve labs from the full 26-lab course that the **three-day outline does not cover**. They are
+Thirteen labs from the full course that the **three-day outline does not cover**. They are
 complete and tested — each has real screenshots, evidence and a `.docx` — and can be dropped into a
 longer engagement, used as follow-up reading, or swapped in if a client's priorities differ.
 
@@ -18,6 +18,7 @@ longer engagement, used as follow-up reading, or swapped in if a client's priori
 | [Runtime Security with Falco](lab-23-falco-runtime-security.md) | Kernel-level alerts on live container misbehavior; a custom rule | kind |
 | [Guardrailed Agentic Kubernetes](lab-24-agentic-guardrails.md) | An agent's mutations denied + audited by policy; reads succeed | GKE |
 | [Chaos Engineering with Chaos Mesh](lab-25-chaos-mesh.md) | Kill a Pod (self-heal) and inject latency (surface a hidden outage) | kind |
+| [Capstone, GKE variant](lab-28-capstone-gke-six-domains.md) | Six everyday application faults — scheduling, image, config, networking, storage, lifecycle | GKE |
 
 **Themes covered here that the three-day outline leaves out:** managed-vs-self-managed cluster
 architecture, scale testing, service mesh, image-scanning admission control, GPU/accelerator scheduling
