@@ -42,7 +42,14 @@ A **StatefulSet** is how you run stateful apps: each replica gets a stable ident
 
 A **`VolumeSnapshot`** asks that CSI driver to take a point-in-time copy of the volume. It's fast and space-efficient, and — crucially — you can create a **new PVC from a snapshot** (`spec.dataSource`), which is how you recover. That's the cycle you'll run: snapshot → destroy → restore.
 
-![Architecture diagram](artifacts/lab-11/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    SS["StatefulSet db-0"] --> PVC["PVC data-db-0<br/>(pd.csi, 1Gi)"]
+    PVC --> PD["real Persistent Disk<br/>/data/message = important-data-v1"]
+    PD -->|"VolumeSnapshot"| SNAP["snapshot db-snap<br/>readyToUse = true"]
+    PVC -.->|"delete StatefulSet + PVC"| GONE["volume gone"]
+    SNAP -->|"dataSource on a new PVC"| RESTORE["PVC data-restored<br/>/data/message intact"]
+```
 
 ---
 
@@ -204,6 +211,9 @@ standard                rancher.io/local-path   <none>      WaitForFirstConsumer
 
 kind's default `standard` class has **no `allowVolumeExpansion` field at all**, so it can never resize. Set up the **CSI hostpath driver** instead:
 
+![The three StorageClasses side by side: csi-hostpath-sc allows expansion, csi-hostpath-noexpand forbids it, and kind's default standard has no value at all](../artifacts/lab-11/screenshots/05-storageclass-expansion.png)
+
+
 ```bash
 kind create cluster --name csistate --config - <<'EOF'
 kind: Cluster
@@ -281,7 +291,7 @@ Unlike the GKE Persistent Disk class, this driver requires an **attach** step, s
 ```console
 $ kubectl get volumeattachment -o custom-columns=NAME:.metadata.name,ATTACHER:.spec.attacher,NODE:.spec.nodeName,ATTACHED:.status.attached
 NAME                                        ATTACHER              NODE               ATTACHED
-csi-762d7c3ab1a1e8c5f370b4742ce4f947...      hostpath.csi.k8s.io   csistate-worker2   true
+csi-762d7c3ab1a1e8c5f370b4742ce4f947...      hostpath.csi.k8s.io   csistate-worker   true
 ```
 
 ---
@@ -338,6 +348,9 @@ The driver told the resizer it is only half done:
 
 **What this means.** Expansion is a **two-RPC** operation. `ControllerExpandVolume` grows the backing volume — that is the `external-resizer` sidecar, and it is what updated the PV. Then `NodeExpandVolume` grows the *filesystem* on the node, and only **kubelet** can do that, only while the volume is mounted. `FileSystemResizePending` is the handoff between the two.
 
+![Phase one: the PVC requests 3Gi but reports 1Gi with Resizing and FileSystemResizePending both True, while the PV has already grown to 3Gi — and the events name volume_expand, then external-resizer, then FileSystemResizeRequired](../artifacts/lab-11/screenshots/06-expansion-phase-1-controller.png)
+
+
 **4. Restart the consumer so kubelet performs the node-side resize:**
 
 ```bash
@@ -358,6 +371,9 @@ important-data-v1
 `status.capacity` now matches `spec`, the conditions are gone, and the data survived.
 
 > ⚠️ **Gotcha — `status.capacity`, not `spec`, is the size you actually have.** `spec.resources.requests.storage` is a *request*. Monitoring or automation that reads `spec` will believe the volume grew the moment you patched it, which is wrong for as long as `FileSystemResizePending` is set — potentially indefinitely, if nothing ever restarts the Pod. Alert on the **condition**, not on the request.
+
+![Phase two: after the Pod restarts, status.capacity reaches 3Gi, the conditions clear, and the file written before the resize is still there](../artifacts/lab-11/screenshots/07-expansion-phase-2-node.png)
+
 
 > ⚠️ **Gotcha — whether you need the restart depends on the driver.** Drivers that support *online* expansion complete `NodeExpandVolume` on the mounted volume with no restart, and you never see `FileSystemResizePending` for more than a moment. The hostpath driver here, like many block drivers, needs the remount. Check your driver's docs before promising a zero-downtime resize.
 
@@ -396,6 +412,9 @@ the pvc must support resize
 
 **Volumes only grow.** There is no shrink in Kubernetes — the API server rejects it outright — and expansion is gated on `allowVolumeExpansion` in the **StorageClass**, decided at provisioning time. Pick the class correctly up front; retrofitting means migrating data.
 
+![Both refusals: shrinking is rejected as less than status.capacity, and expanding a claim on a class without allowVolumeExpansion is forbidden outright](../artifacts/lab-11/screenshots/08-expansion-refusals.png)
+
+
 ---
 
 ## Step 6 — Diagnose a multi-attach failure
@@ -410,7 +429,7 @@ kubectl get pod shop-db-0 -o custom-columns=POD:.metadata.name,NODE:.spec.nodeNa
 
 ```console
 POD         NODE
-shop-db-0   csistate-worker2
+shop-db-0   csistate-worker
 ```
 
 ```bash
@@ -419,7 +438,7 @@ apiVersion: v1
 kind: Pod
 metadata: { name: report-runner }
 spec:
-  nodeName: csistate-worker          # <- the OTHER worker, on purpose
+  nodeName: csistate-worker2          # <- the OTHER worker, on purpose
   containers:
     - name: app
       image: busybox:1.36
@@ -444,10 +463,13 @@ Warning  FailedAttachVolume  46s  attachdetach-controller  Waiting for detach fo
 
 $ kubectl get volumeattachment -o custom-columns=NODE:.spec.nodeName,ATTACHED:.status.attached
 NODE               ATTACHED
-csistate-worker2   true
+csistate-worker   true
 ```
 
-**What this means.** A `ReadWriteOnce` volume can be attached to **one node** at a time. The `attachdetach-controller` in `kube-controller-manager` sees an existing `VolumeAttachment` for `csistate-worker2` and refuses to create a second one for `csistate-worker`. Notice there is still exactly **one** `VolumeAttachment` — the conflict is resolved by *not acting*, which is why the Pod waits forever rather than failing.
+**What this means.** A `ReadWriteOnce` volume can be attached to **one node** at a time. The `attachdetach-controller` in `kube-controller-manager` sees an existing `VolumeAttachment` for `csistate-worker` and refuses to create a second one for `csistate-worker2`. Notice there is still exactly **one** `VolumeAttachment` — the conflict is resolved by *not acting*, which is why the Pod waits forever rather than failing.
+
+![The second Pod stuck in ContainerCreating with FailedAttachVolume from the attachdetach-controller, and still only one VolumeAttachment, on the original node](../artifacts/lab-11/screenshots/09-multi-attach-conflict.png)
+
 
 > ⚠️ **Gotcha — the wording changed, the condition did not.** On Kubernetes v1.37 the message is `Waiting for detach for volume "…" Volume is already used by pod(s) <name>`. Older clusters print `Multi-Attach error for volume "…" Volume is already exclusively attached to one node and can't be attached to another`. Search runbooks for **`FailedAttachVolume`**, which is stable, rather than for the phrase "Multi-Attach".
 
@@ -462,7 +484,7 @@ kubectl scale statefulset shop-db --replicas=0
 ```console
 $ kubectl get volumeattachment -o custom-columns=NODE:.spec.nodeName,ATTACHED:.status.attached
 NODE              ATTACHED
-csistate-worker   true
+csistate-worker2   true
 ```
 
 The attach succeeded on the new node — proving the earlier refusal really was only about the prior attachment. But the Pod *still* will not start, and the reason is now different:
@@ -480,20 +502,20 @@ Warning  FailedMount             6s (x6 over 22s)  kubelet                  Moun
 ```console
 $ kubectl get pv -o jsonpath='{.items[0].spec.nodeAffinity}'
 {"required":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.hostpath.csi/node",
- "operator":"In","values":["csistate-worker2"]}]}]}}
+ "operator":"In","values":["csistate-worker"]}]}]}}
 
 $ kubectl get csinode -o custom-columns=NODE:.metadata.name,DRIVERS:.spec.drivers[*].name,TOPOLOGY:.spec.drivers[*].topologyKeys
 NODE                     DRIVERS               TOPOLOGY
 csistate-control-plane   <none>                <none>
-csistate-worker          <none>                <none>
-csistate-worker2         hostpath.csi.k8s.io   [topology.hostpath.csi/node]
+csistate-worker2          <none>                <none>
+csistate-worker         hostpath.csi.k8s.io   [topology.hostpath.csi/node]
 ```
 
-The volume is **physically on `csistate-worker2`**, so the provisioner wrote `nodeAffinity` into the PV. `kubectl` let the attach happen, then kubelet refused the mount. Fix it by scheduling the consumer where the data is:
+The volume is **physically on `csistate-worker`**, so the provisioner wrote `nodeAffinity` into the PV. (Which worker ends up running the single driver replica is arbitrary — read it from `CSINode` rather than assuming, and swap the names below accordingly.) `kubectl` let the attach happen, then kubelet refused the mount. Fix it by scheduling the consumer where the data is:
 
 ```bash
 kubectl delete pod report-runner
-# re-create with nodeName: csistate-worker2
+# re-create with nodeName: csistate-worker
 kubectl exec report-runner -- cat /data/message
 ```
 
@@ -502,6 +524,9 @@ important-data-v1
 ```
 
 **What this means.** Two distinct controls stopped you, in order: the **attach-detach controller** (one node per RWO volume) and then **kubelet's node-affinity check** (this volume only exists on one node). Read the `From` column — `attachdetach-controller` versus `kubelet` — to know which one you are fighting. A `FailedMount` with `NodeAffinity` is never fixed by waiting; the Pod must move.
+
+![Once the volume detaches the attach succeeds, and kubelet then refuses the mount with a NodeAffinity check failure — the PV is pinned by topology.hostpath.csi/node to the one node that runs the driver](../artifacts/lab-11/screenshots/10-node-affinity-pinned-volume.png)
+
 
 > **Nutanix note.** On a Nutanix cluster, Nutanix Volumes are reachable from any node, so a PV normally carries **no** `nodeAffinity` and this second failure does not occur — a detached RWO volume will attach and mount anywhere. The multi-attach conflict in part 2 is identical, because it is enforced by `kube-controller-manager` and not by the driver. Where topology *does* bite on Nutanix is across **availability domains or rack-aware storage containers**; the diagnostic is the same pair of commands — the PV's `nodeAffinity` and the `CSINode` topology keys.
 
@@ -562,6 +587,9 @@ pvc-f17b29aa-b1e9-471f-b9d3-079f2294f2b7   Bound    locked-pvc
 The PVC went, and because the StorageClass used `reclaimPolicy: Delete`, **the PV and the data went with it**.
 
 **What this means.** `kubernetes.io/pvc-protection` is deliberate protection, not a bug: it stops you destroying storage that something is still mounting. `Terminating` plus a `deletionTimestamp` plus a finalizer means *"waiting for a precondition"* — find the holder, don't force it.
+
+![The deleted PVC sitting in Terminating with a deletionTimestamp and the kubernetes.io/pvc-protection finalizer, while the volume still serves reads](../artifacts/lab-11/screenshots/11-pvc-finalizer-holds-deletion.png)
+
 
 > 🚨 **Gotcha — never `kubectl patch` a `pvc-protection` finalizer away to "unstick" it.** Stripping the finalizer deletes the PVC while a Pod still has the volume mounted; with `reclaimPolicy: Delete` the PV is then removed under a running application, which is data loss, not a cleanup. The supported fix is always to remove the consumer. `kubectl describe pvc` names it, and so does:
 >
@@ -653,6 +681,9 @@ orders-2026-Q3
 ```
 
 **What this means.** `dataSource` takes either a `VolumeSnapshot` (Step 4) or a **`PersistentVolumeClaim`**. Cloning is the right tool for "give me a copy of production data to test against" — it is one object and no snapshot to manage. A snapshot is the right tool for *point-in-time recovery*, because it keeps existing after the source volume is gone. Both require driver support and both are constrained to the **same StorageClass**.
+
+![The clone bound alongside its source, carrying the source's data, then diverging when written to while the source stays unchanged](../artifacts/lab-11/screenshots/12-volume-clone.png)
+
 
 ---
 ## Step 8 — Clean up
