@@ -125,6 +125,9 @@ logcli query --since=2m --limit=5 '{namespace="shop2"}'
 
 **What this means:** `{namespace="shop2"}` is a **label selector** — it matched the stream by label, not by pod name. You never had to know which pod, node, or container it was. That's the difference from `kubectl logs`.
 
+![One label selector returns the newest lines from every Pod in the namespace, each tagged with its pod, container and detected level](../artifacts/lab-14/screenshots/03-logql-label-selector.png)
+
+
 ---
 
 ## Step 3 — Pinpoint the root cause with a line filter
@@ -155,6 +158,9 @@ logcli query 'sum(count_over_time({namespace="shop2"} |= "ERROR" [5m]))'
 
 **What this means:** `count_over_time(...[5m])` counts matching lines per stream over a rolling window, and `sum(...)` collapses them to one number. This is a **metric derived from logs** — the exact thing you'd graph in Grafana or alert on ("page me if payment errors exceed 20 in 5 minutes").
 
+![The same window counted two ways — all ERROR lines and just the PAYMENT_DECLINED ones — each collapsing to a single number](../artifacts/lab-14/screenshots/04-count-over-time.png)
+
+
 ---
 
 ## Step 5 — Turn the query into an alert
@@ -179,7 +185,8 @@ ruler:
 ```
 
 > ⚠️ **Gotcha — the rules directory needs a tenant subdirectory.** With `auth_enabled: false` the
-> tenant is literally `fake`, so rules must live in `/etc/loki/rules/fake/`. Mount them anywhere else
+> tenant is literally `fake`, so rules must live in the tenant subdirectory of whatever
+> `ruler.storage.local.directory` is set to — `<directory>/fake/`. Mount them anywhere else
 > and the ruler starts cleanly, reports no errors, and loads nothing.
 
 **2. Write the rule** — the expression is the LogQL you already wrote:
@@ -220,6 +227,9 @@ instance : state=firing activeAt=2026-09-26T07:26:40Z value=4.8e+01
 
 **What this means.** The rule went through three states, and the middle one is the point:
 
+![Sampling the rules API every twelve seconds: the alert holds at PENDING with value 1.4e+01, then flips to FIRING once the for: 30s window is satisfied](../artifacts/lab-14/screenshots/05-logql-alert-firing.png)
+
+
 ```
 INACTIVE  ->  PENDING  ->  FIRING
              threshold      held for
@@ -253,6 +263,9 @@ kube-system_kube-scheduler-loki-lab-control-plane_...
 ```
 
 The same Promtail scrape already collects them. The selector is just a different namespace:
+
+![The control-plane components Promtail is collecting, and three real kube-apiserver lines returned by the same LogQL selector](../artifacts/lab-14/screenshots/06-control-plane-logs.png)
+
 
 ```logql
 {namespace="kube-system", container="kube-apiserver"} |= "Timeout"

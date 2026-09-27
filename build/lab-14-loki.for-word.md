@@ -40,7 +40,14 @@ You'll install Loki and Promtail, deploy a `payments` app that logs a recurring 
 - a **line filter** — `|= "ERROR"` — keeps only matching lines,
 - an aggregation — `count_over_time(... [5m])` — measures the rate.
 
-![Architecture diagram](artifacts/lab-14/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    P1["pod stdout<br/>(node 1)"] --> PT1["Promtail<br/>(DaemonSet)"]
+    P2["pod stdout<br/>(node 2)"] --> PT2["Promtail<br/>(DaemonSet)"]
+    PT1 -->|"lines + labels"| LOKI["Loki<br/>(indexes by label)"]
+    PT2 -->|"lines + labels"| LOKI
+    LOKI -->|"LogQL:<br/>{namespace=&quot;shop2&quot;} |= &quot;ERROR&quot;"| YOU["you — the exact<br/>failing line + timestamp"]
+```
 
 ---
 
@@ -90,7 +97,7 @@ kubectl -n shop2 logs deploy/payments --tail=6
 
 **What you should see:** `loki-0` and one `loki-promtail-*` Pod **per node** all `Running`, and the app's log stream showing `INFO request N handled` lines with a recurring `ERROR payment failed: connection refused to db:5432`.
 
-![Loki + Promtail running, and the payments app emitting INFO lines plus a recurring ERROR](artifacts/lab-14/screenshots/01-loki-setup.png)
+![Loki + Promtail running, and the payments app emitting INFO lines plus a recurring ERROR](../artifacts/lab-14/screenshots/01-loki-setup.png)
 
 **What this means:** Promtail is already tailing this app's stdout on whatever node it landed on and shipping it to Loki — you didn't configure anything per-app. Now you can query it centrally.
 
@@ -117,6 +124,9 @@ logcli query --since=2m --limit=5 '{namespace="shop2"}'
 
 **What this means:** `{namespace="shop2"}` is a **label selector** — it matched the stream by label, not by pod name. You never had to know which pod, node, or container it was. That's the difference from `kubectl logs`.
 
+![One label selector returns the newest lines from every Pod in the namespace, each tagged with its pod, container and detected level](../artifacts/lab-14/screenshots/03-logql-label-selector.png)
+
+
 ---
 
 ## Step 3 — Pinpoint the root cause with a line filter
@@ -129,7 +139,7 @@ logcli query --since=10m --limit=4 '{namespace="shop2"} |= "ERROR"'
 
 **What you should see:** only the `ERROR payment failed: connection refused to db:5432` lines — the `|= "ERROR"` line filter dropped every `INFO` line. The message tells you the root cause directly: the app can't reach its database at `db:5432`.
 
-![All logs by label selector, then filtered to just the ERROR lines with a LogQL line filter](artifacts/lab-14/screenshots/02-logql-root-cause.png)
+![All logs by label selector, then filtered to just the ERROR lines with a LogQL line filter](../artifacts/lab-14/screenshots/02-logql-root-cause.png)
 
 **What this means:** `|=` keeps only lines containing the substring. In one query, across the whole namespace, you went from "something's wrong" to the exact error and its timestamp — no pod-by-pod hunting. (Loki also has `|~` for regex, `!=` to exclude, and `| json` to parse structured logs into fields.)
 
@@ -147,9 +157,132 @@ logcli query 'sum(count_over_time({namespace="shop2"} |= "ERROR" [5m]))'
 
 **What this means:** `count_over_time(...[5m])` counts matching lines per stream over a rolling window, and `sum(...)` collapses them to one number. This is a **metric derived from logs** — the exact thing you'd graph in Grafana or alert on ("page me if payment errors exceed 20 in 5 minutes").
 
+![The same window counted two ways — all ERROR lines and just the PAYMENT_DECLINED ones — each collapsing to a single number](../artifacts/lab-14/screenshots/04-count-over-time.png)
+
+
 ---
 
-## Step 5 — Clean up
+## Step 5 — Turn the query into an alert
+
+**Goal:** stop watching the dashboard. A LogQL query you have to run yourself is a diagnosis; a rule
+that evaluates it for you is monitoring.
+
+Step 4 produced a number — errors per five minutes. Loki's **ruler** evaluates exactly that kind of
+query on a schedule and raises an alert when it crosses a threshold.
+
+**1. Enable the ruler** in Loki's config — it is off by default:
+
+```yaml
+ruler:
+  storage:
+    type: local
+    local: { directory: /etc/loki/rules }
+  rule_path: /loki/rules-tmp
+  ring: { kvstore: { store: inmemory } }
+  enable_api: true
+  evaluation_interval: 15s
+```
+
+> ⚠️ **Gotcha — the rules directory needs a tenant subdirectory.** With `auth_enabled: false` the
+> tenant is literally `fake`, so rules must live in the tenant subdirectory of whatever
+> `ruler.storage.local.directory` is set to — `<directory>/fake/`. Mount them anywhere else
+> and the ruler starts cleanly, reports no errors, and loads nothing.
+
+**2. Write the rule** — the expression is the LogQL you already wrote:
+
+```yaml
+groups:
+  - name: checkout-errors
+    interval: 15s
+    rules:
+      - alert: CheckoutErrorBurst
+        expr: |
+          sum(count_over_time({namespace="shop"} |= "PAYMENT_DECLINED" [1m])) > 5
+        for: 30s
+        labels: { severity: page, team: payments }
+        annotations:
+          summary: "Checkout is declining payments at an abnormal rate"
+          description: "More than 5 PAYMENT_DECLINED lines in the last minute."
+```
+
+**3. Ask the ruler what it knows:**
+
+```bash
+kubectl -n logging exec deploy/loki -- \
+  wget -qO- http://localhost:3100/prometheus/api/v1/rules
+```
+
+**What you should see once the errors are flowing:**
+
+```
+group    : checkout-errors
+alert    : CheckoutErrorBurst
+query    : (sum(count_over_time({namespace="shop"} |= "PAYMENT_DECLINED"[1m])) > 5)
+for      : 30s
+labels   : {'severity': 'page', 'team': 'payments'}
+STATE    : FIRING
+instance : state=firing activeAt=2026-09-26T07:26:40Z value=4.8e+01
+```
+
+**What this means.** The rule went through three states, and the middle one is the point:
+
+![Sampling the rules API every twelve seconds: the alert holds at PENDING with value 1.4e+01, then flips to FIRING once the for: 30s window is satisfied](../artifacts/lab-14/screenshots/05-logql-alert-firing.png)
+
+
+```
+INACTIVE  ->  PENDING  ->  FIRING
+             threshold      held for
+             crossed        the 'for' window
+```
+
+`for: 30s` is what separates a real incident from a blip. Without it, one noisy minute pages someone
+at 03:00. With it, the condition has to persist before anyone is woken. **That field, not the
+threshold, is usually what needs tuning after a false page.**
+
+> **Note the endpoint path.** It is `/prometheus/api/v1/rules`, not a Loki-specific one. Loki's ruler
+> deliberately speaks the Prometheus rules API, so Alertmanager and anything else that already
+> understands Prometheus alerts works unchanged.
+
+---
+
+## Step 6 — Query the control plane, not just the app
+
+**Goal:** use the same tooling on the components that were failing in Sessions 1 and 2.
+
+On a self-managed cluster the control plane runs as **static Pods**, so its logs are ordinary pod logs:
+
+```bash
+docker exec <control-plane-node> ls /var/log/pods | grep -E "apiserver|etcd|scheduler"
+```
+
+```
+kube-system_etcd-loki-lab-control-plane_1392c4d2...
+kube-system_kube-apiserver-loki-lab-control-plane_...
+kube-system_kube-scheduler-loki-lab-control-plane_...
+```
+
+The same Promtail scrape already collects them. The selector is just a different namespace:
+
+![The control-plane components Promtail is collecting, and three real kube-apiserver lines returned by the same LogQL selector](../artifacts/lab-14/screenshots/06-control-plane-logs.png)
+
+
+```logql
+{namespace="kube-system", container="kube-apiserver"} |= "Timeout"
+{namespace="kube-system", container="etcd"} |= "alarm"
+```
+
+**This is what makes Loki worth the trouble.** The failures from earlier in the course —
+API Priority and Fairness rejections, etcd quota alarms, PVC binding failures, Velero backup errors —
+are all *log* evidence. A query you can run across every cluster beats SSH-ing to a node.
+
+> ⚠️ **On a managed control plane this does not work.** GKE, and NKE's managed option, do not put
+> `kube-apiserver` logs on a node you can reach — there is no `/var/log/pods` entry to scrape. Those
+> logs come from the provider's own logging stack instead. Know which kind of cluster you are on
+> before promising a client control-plane log search.
+
+---
+
+## Step 7 — Clean up
 
 Stop the port-forward (`Ctrl-C` in its terminal), then:
 
@@ -169,13 +302,26 @@ kubectl delete namespace shop2 --ignore-not-found
 | A LogQL label selector queries by label, not pod name | 2 | `{namespace="shop2"}` returns the app's lines |
 | A line filter pinpoints the root cause | 3 | `\|= "ERROR"` → `connection refused to db:5432` |
 | Logs become metrics you can alert on | 4 | `count_over_time` → ~30 errors / 5m |
+| A LogQL query becomes an alert via Loki's ruler | 5 | `CheckoutErrorBurst` reached `STATE: FIRING`, `value=4.8e+01` |
+| `for:` is what stops a blip paging someone | 5 | `INACTIVE → PENDING → FIRING` after holding 30s |
+| Loki speaks the Prometheus rules API | 5 | `/prometheus/api/v1/rules`, so Alertmanager works unchanged |
+| Control-plane logs are ordinary pod logs — when self-managed | 6 | `kube-system_kube-apiserver-…` under `/var/log/pods` |
+| Rules must sit in the tenant subdirectory | 5 gotcha | `auth_enabled: false` ⇒ `/etc/loki/rules/fake/`, else silently empty |
+
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-14/screenshots/`](artifacts/lab-14/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-14/evidence/lab-11-loki.txt`](artifacts/lab-14/evidence/lab-11-loki.txt).
+The ruler run is captured in
+[`artifacts/lab-14/evidence/lab-14-logql-alerting-rule.txt`](../artifacts/lab-14/evidence/lab-14-logql-alerting-rule.txt)
+— 59 lines from 2026-09-26 (Kubernetes 1.37.0, Loki 3.3.2), including the rule file, the ruler
+config, the alert reaching `FIRING` with `value=4.8e+01`, and the control-plane pod-log paths.
+
+### Original evidence
+
+Real screenshots for this lab are in [`artifacts/lab-14/screenshots/`](../artifacts/lab-14/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-14/evidence/lab-11-loki.txt`](../artifacts/lab-14/evidence/lab-11-loki.txt).
 
 ---
 
 ---
 
-**Next:** [Lab 15 — Let Git Drive the Cluster (GitOps Delivery with Flux)](lab-15-flux.docx)
+**Next:** [Lab 15 — Let Git Drive the Cluster (GitOps Delivery with Flux)](../day-3-gitops-fleet-and-governance/lab-15-flux.docx)
