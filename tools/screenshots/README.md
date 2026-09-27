@@ -54,6 +54,20 @@ TERM_PID=$TERM_PID TERM_GEOM=1100,620 ./shot.sh ../../artifacts/lab-27/screensho
 `TERM_GEOM` is `width,height` of the capture window and is what distinguishes it from any other
 Terminal window you have open. Omit it only if that is your sole Terminal window.
 
+## Verified
+
+Both paths were exercised on macOS 26 (2026-09-27):
+
+- **positive** — `ok verified.png 2200x1240 (wid=278384 Terminal pid=87295 scale=2x)`; the image is
+  the target Terminal window and nothing else.
+- **negative** — pointed at the Claude app's pid: `REFUSED: no on-screen Terminal window for pid
+  79535`, and no file was written.
+
+> Note: `screencapture` silently refuses to write to a **leading-dot filename**
+> (`screencapture: cannot write file to intended destination, .../.raw.png`). The scratch file is
+> therefore `raw.png`, not `.raw.png`. This cost an hour of false "capture produced nothing"
+> failures — don't reintroduce it.
+
 ## Still to capture
 
 Labs **26**, **27** and **29** have no screenshots. Each lab carries a
