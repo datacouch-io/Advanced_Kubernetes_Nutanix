@@ -132,7 +132,7 @@ kubectl -n warroom get configmap legacy-record -o jsonpath='{.metadata.name}  de
 
 **What you should see:** six distinct symptoms — `orders`/`analytics` `Pending`, `payments` `ImagePullBackOff`, `checkout` `CreateContainerConfigError`, `frontend` pods `Running` but its Service has **no endpoints**, the `data` PVC `Pending`, and `legacy-record` with a `deletionTimestamp` set but not gone.
 
-![Triage: six distinct faults across scheduling, image, config, networking, storage, lifecycle](../../artifacts/lab-26/screenshots/01-triage.png)
+![Triage: six distinct faults across scheduling, image, config, networking, storage, lifecycle](../../artifacts/lab-28/screenshots/01-triage.png)
 
 **What this means:** these are six *independent* failures, each with a different signature. Recognising the signature is half the diagnosis — `Pending` vs `ImagePullBackOff` vs `CreateContainerConfigError` each point at a different domain.
 
@@ -206,7 +206,7 @@ kubectl -n warroom get configmap legacy-record   # expect NotFound
 
 **What you should see:** all six pods `Running`, `frontend` now has real endpoint IPs, the `data` PVC is `Bound` (StorageClass `standard-rwo`), and `legacy-record` is gone (`NotFound`).
 
-![Resolved: all pods Running, Service has endpoints, PVC Bound, stuck resource gone](../../artifacts/lab-26/screenshots/02-resolved.png)
+![Resolved: all pods Running, Service has endpoints, PVC Bound, stuck resource gone](../../artifacts/lab-28/screenshots/02-resolved.png)
 
 **What this means:** you took a cluster failing six different ways to fully healthy — each fix targeted at a root cause you diagnosed, not guessed.
 
@@ -246,7 +246,7 @@ kubectl delete namespace warroom --ignore-not-found
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-26/screenshots/`](../../artifacts/lab-26/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-26/evidence/lab-18-capstone.txt`](../../artifacts/lab-26/evidence/lab-18-capstone.txt).
+Real screenshots for this lab are in [`artifacts/lab-28/screenshots/`](../../artifacts/lab-28/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-26/evidence/lab-18-capstone.txt`](../../artifacts/lab-26/evidence/lab-18-capstone.txt).
 
 ---
 

@@ -1,0 +1,8 @@
+#!/bin/bash
+# ec — run etcdctl inside the kind control-plane's etcd container
+CID=$(docker exec warroom-control-plane crictl ps --name etcd -q | head -1)
+exec docker exec warroom-control-plane crictl exec "$CID" etcdctl \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key "$@"

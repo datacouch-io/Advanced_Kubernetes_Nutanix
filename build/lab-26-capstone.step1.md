@@ -77,6 +77,11 @@ kubectl get events -A --sort-by=.lastTimestamp | tail -30
 
 **What this means.** Note that `kubectl get pods` does **not** show you three of the six faults. Two of them have no Pod at all, and one is a cluster-level condition with no object in this namespace. A triage that only lists unhealthy Pods will miss half of this incident.
 
+![Triage by Pod alone: catalog, reporter and shopper Running, two checkout Pods Pending — three of the six faults are invisible here](../../artifacts/lab-26/screenshots/01-triage-pods.png)
+
+![The same cluster beyond Pods: checkout stuck at 0/2, a Job reporting Suspended, and a Kueue Workload that was never admitted](../../artifacts/lab-26/screenshots/02-triage-beyond-pods.png)
+
+
 > ⚠️ **Gotcha — events expire.** Default TTL is one hour. Capture what you need into your decision log now; a cluster that has been broken since last night has already lost its earliest evidence.
 
 **Deliverable before moving on:** a list of distinct symptoms, each with the command that shows it.
@@ -122,10 +127,19 @@ docker exec warroom-control-plane crictl exec $CID etcdctl ... defrag
 
 | | dbSize | in use | not in use |
 |---|---|---|---|
-| before | 5.8 MB | 2.8 MB | **53%** |
-| after | **1.4 MB** | 1.4 MB | **1%** |
+| after `compact`, before `defrag` | 4.6 MB | 1.5 MB | **67%** |
+| after `defrag` | **1.4 MB** | 1.4 MB | **1%** |
 
-Defrag took **16.5 ms**.
+Defrag took **29.85 ms**. (An earlier reference run measured 5.8 MB → 1.4 MB, 53% → 1%, in 16.5 ms;
+the exact figures depend on how much churn the seeder has accumulated.)
+
+> ⚠️ **Gotcha — run `compact` first or `defrag` looks like it did nothing.** Straight after seeding,
+> `endpoint status` reports close to **0% not in use**: the deleted ConfigMaps are still held as
+> retained revisions, so they count as *in use*. Compaction is what turns them into free pages —
+> only then does the 67% appear for `defrag` to reclaim.
+
+![Compaction exposes the dead space and defrag reclaims it: 4.6 MB with 67% unused becomes 1.4 MB with 1%, in 29.85 ms](../../artifacts/lab-26/screenshots/03-etcd-compact-and-defrag.png)
+
 
 > ⚠️ **Gotcha — compaction and defragmentation are not the same operation.** `compact` discards old
 > revisions; it does **not** return disk to the filesystem. `defrag` is what shrinks the file, and it
@@ -176,6 +190,11 @@ shares=1 response=Reject
 
 **What this means.** A FlowSchema routes this ServiceAccount into a priority level with **one** concurrency share and `limitResponse: Reject` — so anything beyond a single in-flight request is refused immediately rather than queued. The client is not misbehaving; the lane was built too narrow.
 
+![The reporter logging 429s, and the priority-level dump showing 47,251 rejected against 22,187 dispatched for this one flow](../../artifacts/lab-26/screenshots/04-apf-rejecting-one-flow.png)
+
+![The cause: the flow routes to a priority level with shares=1 and limitResponse=Reject](../../artifacts/lab-26/screenshots/05-the-lane-is-one-share-reject.png)
+
+
 **Remediate.** Raise `nominalConcurrencyShares`, or change `limitResponse` to `Queue`, or remove the FlowSchema so the client falls back to `catch-all`. **Say which you chose and why** — they have different failure behaviour under real load, and the scoring cares about that reasoning more than the fix.
 
 ---
@@ -197,6 +216,9 @@ nightly-close   8m19s
 ```
 
 **What this means.** The object has a `deletionTimestamp` — the delete *was* accepted — but a finalizer is still present and no controller exists to clear it. The API server will not remove the object until that list is empty. It will sit there forever.
+
+![The ledger still listed, carrying a deletionTimestamp and an unclearable finance.shop.io/archive-before-delete finalizer](../../artifacts/lab-26/screenshots/06-delete-blocked-by-finalizer.png)
+
 
 **Before you remove it, answer the question the finalizer is asking.** `archive-before-delete` claims something must be archived first. Establish whether that archive matters, and record the answer. Stripping a finalizer is the standard fix and also the standard way to silently skip a data-safety step.
 
@@ -238,6 +260,9 @@ No resources found
 
 **What this means.** The Deployment pins itself to a storage tier that no node carries — a label left behind after hardware was decommissioned. The old ReplicaSet is still serving, which is why nobody noticed until the rollout stalled.
 
+![FailedScheduling naming two separate causes, no node carrying disktype=nvme-tier0, and the nodeSelector that demands it](../../artifacts/lab-26/screenshots/07-checkout-selector-matches-no-node.png)
+
+
 **Remediate.** Remove the selector, or label a node if the tier genuinely exists. Note which you chose: labelling a node to satisfy a stale selector is how these survive for years.
 
 ---
@@ -257,6 +282,9 @@ http=200    # by IP    — works perfectly
 ```
 
 **What this means.** The service is up and reachable. **Only name resolution is broken**, which narrows the search from "the network" to "DNS" in one command.
+
+![The same Service: exit=6 by name, http=200 by ClusterIP — the network is fine, the lookup is not](../../artifacts/lab-26/screenshots/08-name-fails-address-works.png)
+
 
 ```bash
 kubectl -n shop get networkpolicy shopper-egress -o yaml
@@ -302,6 +330,9 @@ request (4) > maximum capacity (1)
 
 **What this means.** The Job is **Suspended**, not failed. Kueue is holding it because the ClusterQueue's nominal quota is **1 CPU** and the Job needs **4** (2 CPU × 2 parallel pods). There are no Pods, no errors and no events in the namespace — which is exactly why teams miss this one in triage.
 
+![The Job reporting Suspended 0/2, and Kueue's reason: current podset request (4) exceeds a maximum capacity of (1)](../../artifacts/lab-26/screenshots/09-job-suspended-by-kueue.png)
+
+
 ```bash
 kubectl get clusterqueue nightly-batch \
   -o jsonpath='{.spec.resourceGroups[0].flavors[0].resources}'
@@ -325,6 +356,17 @@ docker exec warroom-control-plane crictl exec $CID etcdctl ... endpoint status  
 ```
 
 **The check teams skip:** re-run the *first* fault's verification last. Fixing the scheduling fault created Pods; creating Pods wrote to etcd. Confirm etcd is still healthy after everything else you did.
+
+A one-screen check across all six domains — [`artifacts/lab-26/verify.sh`](../../artifacts/lab-26/verify.sh)
+runs exactly these, using the [`ec`](../../artifacts/lab-26/ec) wrapper for the long `etcdctl` invocation:
+
+![All six domains verified after remediation: etcd 2.1 MB with 0% unused, APF widened to shares=20 response=Queue, the ledger gone, checkout 2/2, DNS resolving by name, and the batch Job admitted and Running](../../artifacts/lab-26/screenshots/10-all-six-resolved.png)
+
+![The shop namespace with every Pod Running, including both checkout replicas and both revenue-rollup Pods](../../artifacts/lab-26/screenshots/11-cluster-healthy.png)
+
+> ⚠️ **Note on the etcd numbers.** The capture above shows **2.1 MB** — larger than the 1.4 MB
+> straight after the defrag, because the five later fixes each wrote to etcd. That growth is the
+> point of the check: verify the first fault last.
 
 ---
 
@@ -404,8 +446,10 @@ A full command transcript is in [`artifacts/lab-26/evidence/lab-26-warroom-six-f
 
 The instructor seed script is [`artifacts/lab-26/seed-warroom.sh`](../../artifacts/lab-26/seed-warroom.sh).
 
-> 📷 **Screenshots outstanding.** Terminal captures for this lab have not been taken. The transcript
-> is the authoritative record until they are.
+Real terminal captures are in [`artifacts/lab-26/screenshots/`](../../artifacts/lab-26/screenshots/)
+(11 images) from a live war-room run on 2026-09-27 — a fresh 3-node `kind` cluster seeded with
+`seed-warroom.sh`, Kubernetes 1.37.0, Kueue v0.14.2. All six faults were diagnosed and remediated in
+that run; the last two images are the verification.
 
 ---
 
