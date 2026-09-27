@@ -432,6 +432,9 @@ default/client -> kube-system/coredns:53 dns-request proxy FORWARDED (DNS Query 
 default/client <- kube-system/coredns:53 dns-response proxy FORWARDED (DNS Answer "10.96.201.151" ...)
 ```
 
+![The fix in place: the Service resolves and returns http=200, and Hubble now shows the DNS request and response FORWARDED through the proxy with the query name and answer visible](../artifacts/lab-08/screenshots/09-dns-allowed-and-named.png)
+
+
 **What this means.** Egress policy is **default-deny once it selects an endpoint** — the moment you
 write any egress rule for a Pod, everything you did *not* list is denied, including DNS. Every
 egress policy needs a DNS allowance, and adding it as an L7 `rules.dns` block buys you the query
