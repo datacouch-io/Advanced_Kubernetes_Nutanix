@@ -68,8 +68,11 @@ Both paths were exercised on macOS 26 (2026-09-27):
 > therefore `raw.png`, not `.raw.png`. This cost an hour of false "capture produced nothing"
 > failures — don't reintroduce it.
 
-## Still to capture
+## What has been captured with this
 
-Labs **26**, **27** and **29** have no screenshots. Each lab carries a
-"📷 Screenshots outstanding" note and embeds no image, so nothing is fabricated — the evidence
-transcripts under `artifacts/lab-NN/evidence/` are the proof in the meantime.
+Labs **26** (11 images), **27** (9) and **29** (7) were captured on 2026-09-27 using this tool.
+
+Still uncaptured: the sections added during the 3-day restructure — lab-04 Step 6, lab-06 Step 4,
+lab-08 Steps 6-9, lab-11 Steps 5-7, lab-12 Step 1, lab-13 Step 4, lab-14 Steps 5-6 and lab-15
+Step 4. Those steps embed no image and are backed by the evidence transcripts under
+`artifacts/lab-NN/evidence/`, so nothing is fabricated — but their screenshots do not exist yet.
