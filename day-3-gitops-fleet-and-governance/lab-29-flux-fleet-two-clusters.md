@@ -97,6 +97,9 @@ Create the account and repository (see [Lab 27, Step 1](lab-27-tenant-quota-gove
 > `curl -sf http://localhost:3000/api/healthz` inside the Pod, not on the rollout, or creating the
 > admin user fails with a bare exit code 1.
 
+![Two kind clusters, with Gitea exposed on fleet-01 as a NodePort and the node's address on the shared kind network](../artifacts/lab-29/screenshots/00-two-clusters-one-git-server.png)
+
+
 ---
 
 ## Step 2 — One manifest, written for many clusters (10 min)
@@ -160,14 +163,17 @@ spec:
 **What you should see:**
 
 ```
-kind-fleet-01    revision=main@sha1:f56fb79e...
-kind-fleet-02    revision=main@sha1:f56fb79e...
+kind-fleet-01    revision=main@sha1:3a929cfa...
+kind-fleet-02    revision=main@sha1:3a929cfa...
 
 kind-fleet-01    replicas=3  tier=canary      cluster=fleet-01
 kind-fleet-02    replicas=2  tier=production  cluster=fleet-02
 ```
 
-**What this means.** Identical revision `f56fb79e` on both. Different replica counts, different labels. Adding a tenth cluster is one ConfigMap — not a tenth copy of the manifests.
+**What this means.** Identical revision `3a929cfa` on both. Different replica counts, different labels. Adding a tenth cluster is one ConfigMap — not a tenth copy of the manifests.
+
+![Both clusters applied main@sha1:3a929cfa — fleet-01 renders 3 replicas tagged canary, fleet-02 renders 2 tagged production](../artifacts/lab-29/screenshots/01-same-commit-two-renders.png)
+
 
 > ⚠️ **Gotcha — an unset variable does not fail loudly.** If a cluster's ConfigMap is missing a key,
 > substitution leaves the literal `${WEB_REPLICAS}` in place and the apply fails with a type error
@@ -195,6 +201,9 @@ kind-fleet-02    branch=release  image=nginx:1.27-alpine
 
 **What this means.** The canary follows the tip of development. Production follows a branch that only moves when someone moves it. Both still read the *same* repository and the *same* path.
 
+![After the ring split: fleet-01 tracks branch main, fleet-02 tracks branch release, both still on the same content](../artifacts/lab-29/screenshots/02-rollout-rings.png)
+
+
 ---
 
 ## Step 5 — Ship it to the canary only (10 min)
@@ -214,6 +223,9 @@ kind-fleet-02    branch=release  image=nginx:1.27-alpine   ready=2/2
 ```
 
 **Production did not move.** One commit, one repository, and the blast radius was exactly one ring — enforced by the branch each cluster tracks rather than by anyone remembering to be careful.
+
+![One commit to main: the canary moves to nginx:1.29-alpine at revision b6cd2dff while production stays on 1.27-alpine at the older revision](../artifacts/lab-29/screenshots/03-canary-only.png)
+
 
 **This is the step to sit on.** Ask the room what would have happened with a single shared branch: the answer is that the same commit reaches every cluster within a reconcile interval, which is the failure mode the outline names as *"a change reaching every cluster simultaneously."*
 
@@ -236,6 +248,9 @@ kind-fleet-02    branch=release  image=nginx:1.29-alpine   ready=2/2
 
 **What this means.** The gate was a merge — reviewable, attributable and revertable. And note production kept **its own replica count of 2** throughout: promoting a version did not overwrite the cluster's identity, because version and identity come from different places.
 
+![After merging main into release, production runs nginx:1.29-alpine at release@sha1:ab3b0282 — and is still at 2 replicas, not the canary's 3](../artifacts/lab-29/screenshots/04-promoted.png)
+
+
 ---
 
 ## Step 7 — Drift, on one cluster only (10 min)
@@ -251,6 +266,11 @@ fleet-01     : replicas=3      (never touched)
 ```
 
 **What this means.** Drift correction is **per cluster, to that cluster's rendered value** — not to a fleet-wide constant. fleet-02 returns to 2 while fleet-01 stays on 3, because each is being reconciled against its own render of the same commit.
+
+![Immediately after scaling production by hand: fleet-02 shows replicas=7 ready=2/7 while fleet-01 is untouched at 3](../artifacts/lab-29/screenshots/05-drift-introduced.png)
+
+![Roughly one reconcile interval later: fleet-02 is back to 2 — its own rendered value — and fleet-01 is still 3](../artifacts/lab-29/screenshots/06-drift-corrected-per-cluster.png)
+
 
 That distinction is what makes per-cluster overlays safe. Without it, a fleet-wide "correct the drift" would flatten every cluster to the same shape.
 
@@ -289,7 +309,7 @@ kind delete cluster --name fleet-02
 
 | You saw… | in Step | proof |
 |---|---|---|
-| One repository can drive many clusters | 3 | both on revision `main@sha1:f56fb79e` |
+| One repository can drive many clusters | 3 | both on revision `main@sha1:3a929cfa` |
 | Per-cluster overlays come from the cluster, not the repo | 3 | `replicas=3 tier=canary` vs `replicas=2 tier=production` |
 | Rollout rings are just per-cluster refs | 4 | canary `branch=main`, production `branch=release` |
 | A commit reaches only the ring that tracks it | 5 | canary `1.29`, production still `1.27` |
@@ -301,8 +321,15 @@ kind delete cluster --name fleet-02
 
 A full transcript is in [`artifacts/lab-29/evidence/lab-29-flux-fleet-two-clusters.txt`](../artifacts/lab-29/evidence/lab-29-flux-fleet-two-clusters.txt) — captured 2026-09-25 across both clusters, covering the shared revision, both renders, the staged upgrade timeline and the drift correction.
 
-> 📷 **Screenshots outstanding.** Terminal captures have not been taken. The transcript is the
-> authoritative record until they are.
+Real terminal captures are in [`artifacts/lab-29/screenshots/`](../artifacts/lab-29/screenshots/)
+(7 images) from a live two-cluster run on 2026-09-27 — Kubernetes 1.37.0, Flux 2.9.5, Gitea 1.22.
+The helper used for the side-by-side view is
+[`artifacts/lab-29/fleetview.sh`](../artifacts/lab-29/fleetview.sh).
+
+> **Note.** The screenshots come from a later run than the transcript, so the revisions differ —
+> the images show `3a929cfa` / `b6cd2dff` / `ab3b0282`, the transcript shows `f56fb79e`. Every
+> behaviour is identical.
+
 
 ---
 
