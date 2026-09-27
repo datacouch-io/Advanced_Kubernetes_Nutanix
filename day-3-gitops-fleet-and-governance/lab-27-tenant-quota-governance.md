@@ -75,6 +75,9 @@ kubectl -n git-server exec $POD -- curl -s -u labadmin:labpass123 \
 
 **What this means.** You now have a real Git remote at `http://gitea.git-server.svc.cluster.local:3000/labadmin/tenants.git`, reachable from inside the cluster and from nowhere else.
 
+![Flux sourcing from Gitea inside the cluster: revision main@sha1:24cc9bd9, Ready True, and a URL that resolves nowhere but this cluster](../artifacts/lab-27/screenshots/01-flux-from-in-cluster-git.png)
+
+
 ---
 
 ## Step 2 — Point Flux at it and deliver the tenant
@@ -146,6 +149,9 @@ tenants  main@sha1:6371c28a  True    Applied revision: main@sha1:6371c28a
 
 **What this means.** The namespace and its quota now exist because Git says they should. Delete the quota by hand and Flux puts it back within 30 seconds — which is the property that makes a tenant budget a *contract* rather than a suggestion.
 
+![The team-a namespace carries Flux's ownership labels, and its ResourceQuota holds the values committed to Git](../artifacts/lab-27/screenshots/02-tenant-delivered-by-flux.png)
+
+
 ---
 
 ## Step 3 — Watch an ordinary Deployment vanish
@@ -173,6 +179,9 @@ web    0/1     0            0           8s
 
 **What this means — and why it is nasty.** There is no Pending Pod. There is no failing Pod. There is **no Pod at all**, so there is nothing to `describe`. The Deployment just sits at `0/1` looking slow.
 
+![No resources found in team-a, while the Deployment reports 0/1 — there is no Pod to diagnose](../artifacts/lab-27/screenshots/03-deployment-vanishes.png)
+
+
 The error is two objects away, on the ReplicaSet:
 
 ```bash
@@ -187,6 +196,9 @@ requests.cpu for: nginx; requests.memory for: nginx
 ```
 
 Once a ResourceQuota covers `cpu` or `memory`, **every Pod in that namespace must state requests and limits** — and a stock Deployment states none. The tenant is not over budget. It cannot spend at all.
+
+![The real error, two objects away on the ReplicaSet: must specify limits.cpu, limits.memory, requests.cpu and requests.memory](../artifacts/lab-27/screenshots/04-error-is-on-the-replicaset.png)
+
 
 > ⚠️ **Gotcha — the events are on the ReplicaSet, and they expire.** `kubectl describe deploy` will not show you this; the Deployment controller is not the one being refused. Go to the ReplicaSet, or query events by `reason=FailedCreate`. And because events default to a one-hour TTL, a tenant who reports this the next morning will have nothing left to show you.
 
@@ -231,6 +243,9 @@ web-bd64fdf85-6dq2f   1/1     Running   0          15s
 
 **What this means.** Nothing about the Deployment changed — no one edited the manifest to add resources. The LimitRange filled in exactly what the quota insisted on. **Quota is the ceiling; LimitRange is what lets ordinary workloads reach it.** Ship them together or the tenant is simply locked out.
 
+![The same untouched Deployment is now Running, its container carrying the LimitRange's defaults: limits 500m/512Mi, requests 100m/128Mi](../artifacts/lab-27/screenshots/05-limitrange-supplies-the-defaults.png)
+
+
 ---
 
 ## Step 5 — Exhaust the quota, and work out why it stopped where it did
@@ -266,6 +281,9 @@ used: limits.cpu=4,limits.memory=4Gi, limited: limits.cpu=4,limits.memory=4Gi
 
 **Stop and read the numbers before moving on.** It stopped at **8** replicas. The obvious prediction was 20: `requests.cpu` is capped at 2 CPU and each Pod requests `100m`.
 
+![Scaled to 25, stopped at 8/25 — and the quota shows why: limits.cpu is exhausted at 4/4 while requests.cpu has used only 800m of 2](../artifacts/lab-27/screenshots/06-quota-exhaustion.png)
+
+
 But `requests.cpu` is only at **800m of 2** — nowhere near full. The constraint that actually bound is **`limits.cpu`: 4 of 4**, consumed by the LimitRange's *default limit* of `500m` per container:
 
 ```
@@ -273,6 +291,9 @@ But `requests.cpu` is only at **800m of 2** — nowhere near full. The constrain
 ```
 
 **The overcommit ratio you chose in the LimitRange — not the request — decided how many Pods this tenant can run.** A default limit of `200m` instead of `500m` would have let the same quota carry 20. This is the single most useful thing in the lab: the tenant's real capacity is set by a field most people copy from an example without reading.
+
+![The refusal names the binding constraint: requested limits.cpu=500m against used limits.cpu=4 of a limit of 4](../artifacts/lab-27/screenshots/07-why-it-stopped-at-8.png)
+
 
 > ⚠️ **Gotcha — a quota can block your own incident response.** `limits.cpu` being full means the tenant cannot scale *anything* up, including a controller reacting to an outage. When a quota is exhausted, check whether the thing you're about to rely on to recover is also inside it.
 
@@ -336,10 +357,19 @@ flux get kustomizations
 {"count/deployments.apps":"5","limits.cpu":"16","limits.memory":"16Gi",
  "requests.cpu":"8","requests.memory":"8Gi"}
 
-tenants  main@sha1:cca67164  True  Applied revision: main@sha1:cca67164
+tenants  main@sha1:769a9c39  True  Applied revision: main@sha1:769a9c39
 ```
 
-**What this means.** The Git revision is **identical** — `cca67164` both times. The same reviewed, audited manifest produced a 12-CPU quota on one cluster and an 8-CPU quota on the other, because the budget lives in the cluster and the policy lives in Git. No per-cluster branch, no per-cluster directory, no copy-paste drift.
+**What this means.** The Git revision is **identical** — `769a9c39` both times. The same reviewed, audited manifest produced a 12-CPU quota on one cluster and an 8-CPU quota on the other, because the budget lives in the cluster and the policy lives in Git. No per-cluster branch, no per-cluster directory, no copy-paste drift.
+
+![The 60% share rendered from the cluster's own ConfigMap: limits.cpu 24, requests.cpu 12](../artifacts/lab-27/screenshots/08-budget-60-percent-share.png)
+
+![The 40% share, applied at the very same revision 769a9c39: limits.cpu 16, requests.cpu 8](../artifacts/lab-27/screenshots/09-budget-40-percent-same-git-sha.png)
+
+> The two captures above were taken on the same cluster minutes apart. Compare the revision line in
+> each: `main@sha1:769a9c39` produced **12 CPU** with one ConfigMap and **8 CPU** with the other.
+> Nothing in Git changed between them.
+
 
 That is the practical answer to *"Kubernetes has no cross-cluster quota"*: you keep the **allocation** in one place and let each cluster carry its share.
 
@@ -383,15 +413,21 @@ kind delete cluster --name cilium-lab
 | LimitRange defaults make the same Deployment admissible, unchanged | 4 | `1/1 Running`, resources `100m/500m` injected |
 | The default *limit* sets the overcommit ratio and the real Pod ceiling | 5 | stopped at **8/25**; `limits.cpu 4/4` while `requests.cpu` only `800m/2` |
 | Quota exhaustion reports the dimension that actually bound | 5 | `exceeded quota … limited: limits.cpu=4` |
-| One commit can render a different quota per cluster | 6 | 12 CPU then 8 CPU, both at revision `cca67164` |
+| One commit can render a different quota per cluster | 6 | 12 CPU then 8 CPU, both at revision `769a9c39` |
 
 ## Evidence
 
 A full command transcript is in [`artifacts/lab-27/evidence/lab-27-tenant-quota-governance.txt`](../artifacts/lab-27/evidence/lab-27-tenant-quota-governance.txt) — 111 lines captured on 2026-09-25 against Kubernetes 1.37.0 with Flux 2.9.5 and Gitea 1.22, covering every output quoted above.
 
-> 📷 **Screenshots outstanding.** The terminal captures for this lab have not been taken yet. The
-> transcript above is the authoritative record until they are; every command and output in this lab
-> comes from it.
+Real terminal captures are in [`artifacts/lab-27/screenshots/`](../artifacts/lab-27/screenshots/)
+(9 images), taken during a live run on 2026-09-27 against a fresh `kind` cluster — Kubernetes
+1.37.0, Flux 2.9.5, Gitea 1.22.
+
+> **Note on the two transcripts.** The screenshots come from a *later* run than the
+> `lab-27-tenant-quota-governance.txt` transcript, so the Git revision differs — the images show
+> `769a9c39`, the 2026-09-25 transcript shows `e70e20a3` / `cca67164`. Every command, value and
+> error message is otherwise identical, including the stop at **8/25** replicas. The lab body quotes
+> the revisions visible in the screenshots.
 
 ---
 
