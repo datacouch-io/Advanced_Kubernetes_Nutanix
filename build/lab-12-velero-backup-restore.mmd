@@ -1,5 +1,5 @@
 flowchart TB
     NS["namespace: shop<br/>Deployment + Service + ConfigMap(data)"] -->|"velero backup create"| VELERO["Velero"]
-    VELERO -->|"stores objects (+ volume data)"| MINIO["MinIO bucket 'velero'<br/>(S3-compatible)"]
+    VELERO -->|"stores objects (+ volume data)"| MINIO["in-cluster bucket 'velero'<br/>(S3-compatible)"]
     NS -.->|"kubectl delete namespace shop"| GONE["everything gone"]
     MINIO -->|"velero restore --from-backup"| RESTORED["namespace shop rebuilt<br/>objects + data intact"]

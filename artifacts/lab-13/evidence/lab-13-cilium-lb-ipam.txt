@@ -1,0 +1,127 @@
+# Lab 13 — Step 6 evidence: Cilium LB-IPAM compared with MetalLB
+# kind cluster 'lbipam' — Cilium 1.20.1, kube-proxy replacement, NO MetalLB installed
+# Captured 2026-09-27T05:18:33Z
+
+================ 1. no separate load-balancer data plane ================
+$ cilium status
+ /¯¯\__/¯¯\    Cilium:             OK
+ \__/¯¯\__/    Operator:           OK
+ /¯¯\__/¯¯\    Envoy DaemonSet:    OK
+ \__/¯¯\__/    Hubble Relay:       disabled
+    \__/       ClusterMesh:        disabled
+
+DaemonSet              cilium                   Desired: 2, Ready: 2/2, Available: 2/2
+DaemonSet              cilium-envoy             Desired: 2, Ready: 2/2, Available: 2/2
+Deployment             cilium-operator          Desired: 1, Ready: 1/1, Available: 1/1
+Containers:            cilium                   Running: 2
+                       cilium-envoy             Running: 2
+                       cilium-operator          Running: 1
+
+$ kubectl -n kube-system get ds,deploy -o name | grep -iE "metallb|speaker"
+(no output — allocation is done by the cilium-operator, announcement by the cilium agents)
+
+================ 2. allocation: CiliumLoadBalancerIPPool ================
+$ kubectl get ciliumloadbalancerippool
+NAME            DISABLED   CONFLICTING   IPS AVAILABLE   AGE
+shop-pool       false      False         49              11m
+tenant-b-pool   false      False         7               3m5s
+
+$ kubectl get svc
+NAME              TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)        AGE
+orphan            LoadBalancer   10.96.103.35    <pending>        80:32505/TCP   112s
+shopfront         LoadBalancer   10.96.59.24     172.19.255.200   80:31166/TCP   12m
+shopfront-fixed   LoadBalancer   10.96.172.101   172.19.255.240   80:32296/TCP   8m59s
+tenant-b          LoadBalancer   10.96.8.133     172.19.254.0     80:32208/TCP   2m5s
+
+$ kubectl get svc shopfront -o jsonpath="{.status.loadBalancer.ingress[0]}"
+{"ip":"172.19.255.200","ipMode":"VIP"}
+
+# a specific address is requested with an annotation, not a pool-side reservation:
+$ kubectl get svc shopfront-fixed -o jsonpath="{.metadata.annotations}"
+{"lbipam.cilium.io/ips":"172.19.255.240"}   (last-applied-configuration elided)
+
+================ 3. the addresses actually carry traffic ================
+$ curl -o /dev/null -w '%{http_code}' http://172.19.255.200   ->   200
+$ curl -o /dev/null -w '%{http_code}' http://172.19.255.240   ->   200
+$ curl -o /dev/null -w '%{http_code}' http://172.19.254.0   ->   200
+
+================ 4. announcement is a SEPARATE feature ================
+# LB-IPAM alone only writes .status.loadBalancer.ingress. Nothing answers ARP until
+# l2announcements.enabled=true AND a CiliumL2AnnouncementPolicy selects the interface.
+$ kubectl get ciliuml2announcementpolicy announce-lb -o jsonpath="{.spec}"
+{"interfaces":["eth0"],"loadBalancerIPs":true}
+
+$ kubectl -n kube-system get lease -o custom-columns=LEASE:.metadata.name,HOLDER:.spec.holderIdentity | grep l2announce
+cilium-l2announce-default-shopfront         lbipam-control-plane
+cilium-l2announce-default-shopfront-fixed   lbipam-control-plane
+cilium-l2announce-default-tenant-b          lbipam-control-plane
+
+# one leader per Service — the same single-node failure domain as MetalLB L2 mode
+$ for n in lbipam-control-plane lbipam-worker; do echo $n $(docker exec $n cat /sys/class/net/eth0/address); done
+lbipam-control-plane  96:28:36:56:3b:56
+lbipam-worker  2a:9c:8d:4b:af:61
+
+$ arping -c2 172.19.255.200      # replying MAC == the lease holder eth0
+Unicast reply from 172.19.255.200 [96:28:36:56:3B:56]  0.538ms
+Unicast reply from 172.19.255.200 [96:28:36:56:3B:56]  0.610ms
+Sent 2 probes (1 broadcast(s))
+Received 2 response(s)
+
+$ kubectl -n kube-system exec $CILIUM_POD -c cilium-agent -- cilium-dbg shell -- db/show l2-announce
+IP               NetworkInterface
+172.19.254.0     eth0
+172.19.255.200   eth0
+172.19.255.240   eth0
+
+
+================ 5. overlapping pools are refused, not merged ================
+$ kubectl get ciliumloadbalancerippool
+NAME            DISABLED   CONFLICTING   IPS AVAILABLE   AGE
+overlap-pool    false      True          11              8s
+shop-pool       false      False         49              11m
+tenant-b-pool   false      False         7               3m16s
+
+$ kubectl get ciliumloadbalancerippool overlap-pool -o jsonpath="{.status.conditions[?(@.type==\"cilium.io/PoolConflict\")].message}"
+Pool conflicts since range '172.19.255.240 - 172.19.255.250' overlaps range '172.19.255.200 - 172.19.255.250' from IP Pool 'shop-pool'
+
+================ 6. a Service matching no pool: silent in events ================
+$ kubectl describe svc orphan | sed -n "/Events/,$p"
+Events:                   <none>
+
+# the reason is on the Service CONDITIONS, which kubectl describe does not print:
+$ kubectl get svc orphan -o jsonpath="{.status.conditions}"
+[{"lastTransitionTime":"2026-09-27T05:16:41Z","message":"There are no enabled CiliumLoadBalancerIPPools that match this service","reason":"no_pool","status":"False","type":"cilium.io/IPAMRequestSatisfied"}]
+
+================ 7. narrowing a pool selector REVOKES live addresses ================
+$ kubectl get svc shopfront shopfront-fixed   # before
+NAME              TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)        AGE
+shopfront         LoadBalancer   10.96.59.24     172.19.255.200   80:31166/TCP   12m
+shopfront-fixed   LoadBalancer   10.96.172.101   172.19.255.240   80:32296/TCP   9m11s
+
+$ kubectl patch ciliumloadbalancerippool shop-pool --type merge -p "{\"spec\":{\"serviceSelector\":{\"matchLabels\":{\"tenant\":\"qa\"}}}}"
+ciliumloadbalancerippool.cilium.io/shop-pool patched
+$ kubectl get svc shopfront shopfront-fixed   # 12s later — both addresses withdrawn
+NAME              TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+shopfront         LoadBalancer   10.96.59.24     <pending>     80:31166/TCP   12m
+shopfront-fixed   LoadBalancer   10.96.172.101   <pending>     80:32296/TCP   9m23s
+
+$ kubectl get svc shopfront -o jsonpath="{.status.conditions}"
+[{"lastTransitionTime":"2026-09-27T05:18:45Z","message":"There are no enabled CiliumLoadBalancerIPPools that match this service","reason":"no_pool","status":"False","type":"cilium.io/IPAMRequestSatisfied"}]
+
+# put it back
+$ kubectl get svc shopfront shopfront-fixed   # same addresses returned
+NAME              TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)        AGE
+shopfront         LoadBalancer   10.96.59.24     172.19.255.200   80:31166/TCP   12m
+shopfront-fixed   LoadBalancer   10.96.172.101   172.19.255.240   80:32296/TCP   9m35s
+
+$ curl -o /dev/null -w '%{http_code}' http://172.19.255.200   ->   200
+$ curl -o /dev/null -w '%{http_code}' http://172.19.255.240   ->   200
+
+================ 8. the BGP control plane is a third, separate thing ================
+$ kubectl -n kube-system get cm cilium-config -o jsonpath="{.data.enable-bgp-control-plane}"
+(empty — disabled)
+$ kubectl api-resources --api-group=cilium.io | grep -i bgp
+(no output — the BGP CRDs are not even registered until bgpControlPlane.enabled=true)
+
+$ kubectl api-resources --api-group=cilium.io --no-headers | wc -l
+10

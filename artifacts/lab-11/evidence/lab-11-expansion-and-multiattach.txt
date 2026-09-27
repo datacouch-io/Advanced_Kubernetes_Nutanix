@@ -1,0 +1,173 @@
+# Lab 11 — Steps 5-7 evidence: volume expansion, multi-attach and PVC lifecycle
+# kind cluster 'csistate' (3 nodes, Kubernetes v1.37.0)
+# csi-driver-host-path v1.18.0 / hostpathplugin v1.17.1, external-resizer v2.2.1, external-attacher v4.12.0
+# Captured 2026-09-27T05:40:39Z
+
+================ 1. StorageClasses: expansion is a StorageClass property ================
+$ kubectl get sc -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner,EXPANSION:.allowVolumeExpansion,BINDING:.volumeBindingMode,RECLAIM:.reclaimPolicy
+NAME                    PROVISIONER             EXPANSION   BINDING                RECLAIM
+csi-hostpath-noexpand   hostpath.csi.k8s.io     false       Immediate              Delete
+csi-hostpath-sc         hostpath.csi.k8s.io     true        Immediate              Delete
+standard                rancher.io/local-path   <none>      WaitForFirstConsumer   Delete
+
+# note: kind's default 'standard' (rancher.io/local-path) has no allowVolumeExpansion at all —
+# that is why this part of the lab needs a real CSI driver, not the built-in provisioner.
+
+================ 2. StatefulSet + volumeClaimTemplate: the bound contract ================
+partitioned roll out complete: 1 new pods have been updated...
+
+$ kubectl get pvc data-shop-db-0
+NAME             STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+data-shop-db-0   Bound    pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56   1Gi        RWO            csi-hostpath-sc   <unset>                 7s
+
+$ kubectl get volumeattachment -o custom-columns=NAME:.metadata.name,ATTACHER:.spec.attacher,NODE:.spec.nodeName,ATTACHED:.status.attached
+NAME                                                                   ATTACHER              NODE               ATTACHED
+csi-762d7c3ab1a1e8c5f370b4742ce4f947008a7071ff1a4699131063cc298b1936   hostpath.csi.k8s.io   csistate-worker2   true
+
+$ kubectl exec shop-db-0 -- cat /data/message
+important-data-v1
+
+================ 3. Expansion phase 1 — the controller resizes the volume ================
+$ kubectl patch pvc data-shop-db-0 --type merge -p "{\"spec\":{\"resources\":{\"requests\":{\"storage\":\"3Gi\"}}}}"
+persistentvolumeclaim/data-shop-db-0 patched
+  spec=3Gi  status=1Gi  conditions=[Unused=False Resizing=True FileSystemResizePending=True ]
+  spec=3Gi  status=1Gi  conditions=[Unused=False Resizing=True FileSystemResizePending=True ]
+  spec=3Gi  status=1Gi  conditions=[Unused=False Resizing=True FileSystemResizePending=True ]
+
+$ kubectl get pv -o custom-columns=NAME:.metadata.name,CAPACITY:.spec.capacity.storage    # the PV already grew
+NAME                                       CAPACITY
+pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56   3Gi
+
+$ kubectl describe pvc data-shop-db-0 | sed -n "/Events/,$p"
+Events:
+  Type    Reason                    Age   From                                                                           Message
+  ----    ------                    ----  ----                                                                           -------
+  Normal  Provisioning              25s   hostpath.csi.k8s.io_csi-hostpathplugin-0_ec56344a-d78d-4d98-9de3-93dfb5d5a04b  External provisioner is provisioning volume for claim "default/data-shop-db-0"
+  Normal  ExternalProvisioning      25s   persistentvolume-controller                                                    Waiting for a volume to be created either by the external provisioner 'hostpath.csi.k8s.io' or manually by the system administrator. If volume creation is delayed, please verify that the provisioner is running and correctly registered.
+  Normal  ProvisioningSucceeded     25s   hostpath.csi.k8s.io_csi-hostpathplugin-0_ec56344a-d78d-4d98-9de3-93dfb5d5a04b  Successfully provisioned volume pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56
+  Normal  ExternalExpanding         18s   volume_expand                                                                  waiting for an external controller to expand this PVC
+  Normal  Resizing                  18s   external-resizer hostpath.csi.k8s.io                                           External resizer is resizing volume pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56
+  Normal  FileSystemResizeRequired  18s   external-resizer hostpath.csi.k8s.io                                           Require file system resize of volume on node
+
+# the PVC is stuck at FileSystemResizePending: the CSI driver answered
+# ControllerExpandVolume with node_expansion_required=true, so the NODE must finish the job.
+$ kubectl logs csi-hostpathplugin-0 -c hostpath | grep ControllerExpandVolume
+"Method":"/csi.v1.Controller/ControllerExpandVolume","Request":{"volume_id":"f8f07e60-ba35-11f1-814a-06d7b9d69649","capacity_range":{"required_bytes":3221225472},"volume_capability":{"AccessType":{"Mount":{}},"access_mode":{"mode":7}}},"Response":{"capacity_bytes":3221225472,"node_expansion_required":true}
+
+================ 4. Expansion phase 2 — restart the consumer so the node resizes the filesystem ================
+$ kubectl delete pod shop-db-0
+pod "shop-db-0" deleted
+partitioned roll out complete: 1 new pods have been updated...
+  spec=3Gi  status=3Gi  conditions=[Unused=False ]
+  spec=3Gi  status=3Gi  conditions=[Unused=False ]
+  spec=3Gi  status=3Gi  conditions=[Unused=False ]
+
+$ kubectl get pvc data-shop-db-0
+NAME             STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+data-shop-db-0   Bound    pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56   3Gi        RWO            csi-hostpath-sc   <unset>                 76s
+
+$ kubectl logs csi-hostpathplugin-0 -c hostpath | grep NodeExpandVolume
+GRPC call: /csi.v1.Node/NodeExpandVolume
+
+$ kubectl exec shop-db-0 -- cat /data/message    # data intact across the resize
+important-data-v1
+
+================ 5. Expansion refusals ================
+$ kubectl patch pvc data-shop-db-0 --type merge -p "{...storage: 1Gi}"      # shrink
+The PersistentVolumeClaim "data-shop-db-0" is invalid: spec.resources.requests.storage: Forbidden: field can not be less than status.capacity
+
+$ kubectl patch pvc locked-pvc --type merge -p "{...storage: 2Gi}"          # SC has allowVolumeExpansion: false
+Error from server (Forbidden): persistentvolumeclaims "locked-pvc" is forbidden: only dynamically provisioned pvc can be resized and the storageclass that provisions the pvc must support resize
+
+================ 6. Multi-attach conflict: a second Pod, a different node, the same RWO claim ================
+$ kubectl get pod shop-db-0 -o custom-columns=POD:.metadata.name,NODE:.spec.nodeName
+POD         NODE
+shop-db-0   csistate-worker2
+pod/report-runner created   (nodeName: csistate-worker)
+$ kubectl get pod report-runner
+NAME            READY   STATUS              RESTARTS   AGE
+report-runner   0/1     ContainerCreating   0          45s
+
+$ kubectl describe pod report-runner | sed -n "/Events/,$p"
+Events:
+  Type     Reason              Age   From                     Message
+  ----     ------              ----  ----                     -------
+  Warning  FailedAttachVolume  46s   attachdetach-controller  Waiting for detach for volume "pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56" Volume is already used by pod(s) shop-db-0
+
+$ kubectl get volumeattachment -o custom-columns=NODE:.spec.nodeName,ATTACHED:.status.attached   # still the old node
+NODE               ATTACHED
+csistate-worker2   true
+
+================ 7. Detach the volume, and the NEXT failure appears: node-affinity-pinned volume ================
+$ kubectl scale statefulset shop-db --replicas=0
+statefulset.apps/shop-db scaled
+$ kubectl get volumeattachment -o custom-columns=NODE:.spec.nodeName,ATTACHED:.status.attached   # attach moved
+NODE              ATTACHED
+csistate-worker   true
+
+$ kubectl describe pod report-runner | sed -n "/Events/,$p"
+Events:
+  Type     Reason                  Age               From                     Message
+  ----     ------                  ----              ----                     -------
+  Warning  FailedAttachVolume      106s              attachdetach-controller  Waiting for detach for volume "pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56" Volume is already used by pod(s) shop-db-0
+  Normal   SuccessfulAttachVolume  22s               attachdetach-controller  AttachVolume.Attach succeeded for volume "pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56"
+  Warning  FailedMount             6s (x6 over 22s)  kubelet                  MountVolume.NodeAffinity check failed for volume "pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56" : no matching NodeSelectorTerms
+
+$ kubectl get pv -o jsonpath="{.items[0].spec.nodeAffinity}"
+{"required":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"topology.hostpath.csi/node","operator":"In","values":["csistate-worker2"]}]}]}}
+
+$ kubectl get csinode -o custom-columns=NODE:.metadata.name,DRIVERS:.spec.drivers[*].name,TOPOLOGY:.spec.drivers[*].topologyKeys
+NODE                     DRIVERS               TOPOLOGY
+csistate-control-plane   <none>                <none>
+csistate-worker          <none>                <none>
+csistate-worker2         hostpath.csi.k8s.io   [topology.hostpath.csi/node]
+
+================ 8. Fix it by scheduling the consumer where the volume actually lives ================
+pod/report-runner created   (nodeName: csistate-worker2)
+pod/report-runner condition met
+$ kubectl exec report-runner -- cat /data/message
+important-data-v1
+
+================ 9. A PVC finalizer produces a stuck deletion ================
+$ kubectl delete pvc data-shop-db-0 --wait=false
+persistentvolumeclaim "data-shop-db-0" deleted from default namespace
+$ kubectl get pvc data-shop-db-0
+NAME             STATUS        VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+data-shop-db-0   Terminating   pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56   3Gi        RWO            csi-hostpath-sc   <unset>                 3m31s
+$ kubectl get pvc data-shop-db-0 -o jsonpath="{.metadata.finalizers}"
+["kubernetes.io/pvc-protection"]
+$ kubectl get pvc data-shop-db-0 -o jsonpath="{.metadata.deletionTimestamp}"
+2026-09-27T05:44:02Z
+
+# 60 seconds later — nothing has changed, and the data is still readable:
+NAME             STATUS        VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+data-shop-db-0   Terminating   pvc-f833ee26-a0ef-4f3f-bea3-077146df7c56   3Gi        RWO            csi-hostpath-sc   <unset>                 4m26s
+important-data-v1
+
+$ kubectl delete pod report-runner        # remove the consumer
+pod "report-runner" deleted
+$ kubectl get pvc data-shop-db-0
+Error from server (NotFound): persistentvolumeclaims "data-shop-db-0" not found
+$ kubectl get pv     # reclaimPolicy: Delete -> the volume went with it
+NAME                                       STATUS   CLAIM
+pvc-f17b29aa-b1e9-471f-b9d3-079f2294f2b7   Bound    locked-pvc
+
+================ 10. Volume cloning: a new PVC straight from an existing PVC ================
+pod/writer condition met
+$ kubectl exec writer -- cat /data/ledger
+orders-2026-Q3
+
+$ kubectl apply -f clone-pvc.yaml     # spec.dataSource kind: PersistentVolumeClaim
+persistentvolumeclaim/clone-pvc created
+NAME        STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+src-pvc     Bound    pvc-10da5199-620b-4ddb-8d67-935176a82a72   1Gi        RWO            csi-hostpath-sc   <unset>                 22s
+clone-pvc   Bound    pvc-95e46fdc-3101-4a85-981c-6766962096cf   1Gi        RWO            csi-hostpath-sc   <unset>                 12s
+pod/clone-reader condition met
+
+$ kubectl exec clone-reader -- cat /data/ledger          # the clone has the data
+orders-2026-Q3
+$ kubectl exec clone-reader -- sh -c "echo clone-only-line >> /data/ledger; cat /data/ledger"
+orders-2026-Q3
+clone-only-line
+$ kubectl exec writer -- cat /data/ledger               # the source is independent
+orders-2026-Q3

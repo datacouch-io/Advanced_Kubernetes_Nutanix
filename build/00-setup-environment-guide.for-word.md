@@ -1,10 +1,9 @@
-# Environment Setup Guide — Advanced Kubernetes (Nutanix)
 
 **Day 1: How Kubernetes Really Works · Day 2: Stateful Workloads & Service Exposure · Day 3: GitOps, Fleet & Governance**
 
 Work through this **before** the session. Several labs provision real cloud infrastructure, and losing the first hour of Day 1 to tool installation costs hands-on time you don't get back.
 
-The authoritative index of what runs when is [`COURSE-MAP.md`](COURSE-MAP.md). Each lab also states its own prerequisites in its **Before you start** section; where this guide and a lab disagree, the lab wins.
+The authoritative index of what runs when is [`COURSE-MAP.docx`](COURSE-MAP.docx). Each lab also states its own prerequisites in its **Before you start** section; where this guide and a lab disagree, the lab wins.
 
 ---
 
@@ -218,29 +217,29 @@ kubectl auth can-i create deployments
 
 | Lab | Platform | Tools beyond `kubectl` | Notes |
 |---|---|---|---|
-| [1 — Reconciliation Tracing](day-1-internals-and-networking/lab-01-reconciliation-tracing.md) | kind | `docker`, `kind` | creates `advk8s-day1`; **Step 3 needs two terminals side by side** |
-| [2 — API Priority & Fairness](day-1-internals-and-networking/lab-02-api-priority-fairness.md) | kind | `curl` | **reuses Lab 1's cluster** — run Lab 1 first |
-| [4 — Pending-Pod Diagnostics](day-1-internals-and-networking/lab-04-pending-pod-diagnostics.md) | GKE | `gcloud`, auth plugin | Step 6 adds KWOK simulated nodes |
-| [8 — Cilium & Hubble](day-1-internals-and-networking/lab-08-cilium-hubble.md) | kind | `cilium`, `hubble` CLIs | its own cluster with the default CNI disabled |
+| [1 — Reconciliation Tracing](day-1-internals-and-networking/lab-01-reconciliation-tracing.docx) | kind | `docker`, `kind` | creates `advk8s-day1`; **Step 3 needs two terminals side by side** |
+| [2 — API Priority & Fairness](day-1-internals-and-networking/lab-02-api-priority-fairness.docx) | kind | `curl` | **reuses Lab 1's cluster** — run Lab 1 first |
+| [4 — Pending-Pod Diagnostics](day-1-internals-and-networking/lab-04-pending-pod-diagnostics.docx) | GKE | `gcloud`, auth plugin | Step 6 adds KWOK simulated nodes |
+| [8 — Cilium & Hubble](day-1-internals-and-networking/lab-08-cilium-hubble.docx) | kind | `cilium`, `hubble` CLIs | its own cluster with the default CNI disabled |
 
 ### Day 2 — Stateful Storage & Exposure
 
 | Lab | Platform | Tools beyond `kubectl` | Notes |
 |---|---|---|---|
-| [11 — StatefulSets & Snapshots](day-2-stateful-storage-and-exposure/lab-11-statefulsets-snapshots.md) | **both** | `gcloud` (Steps 1–4), `docker`+`kind` (Steps 5–7) | Steps 5–7 install the CSI hostpath driver on a fresh 3-node kind cluster |
-| [12 — Velero Backup & Restore](day-2-stateful-storage-and-exposure/lab-12-velero-backup-restore.md) | GKE | `velero` | see the object-store note in §8 |
-| [13 — MetalLB](day-2-stateful-storage-and-exposure/lab-13-metallb.md) | kind | `docker`, `kind` | reuses Lab 1's multi-node cluster; Step 4 builds a second cluster for the Cilium comparison |
-| [14 — Loki](day-2-stateful-storage-and-exposure/lab-14-loki.md) | GKE | `helm`, `logcli` | |
+| [11 — StatefulSets & Snapshots](day-2-stateful-storage-and-exposure/lab-11-statefulsets-snapshots.docx) | **both** | `gcloud` (Steps 1–4), `docker`+`kind` (Steps 5–7) | Steps 5–7 install the CSI hostpath driver on a fresh 3-node kind cluster |
+| [12 — Velero Backup & Restore](day-2-stateful-storage-and-exposure/lab-12-velero-backup-restore.docx) | GKE | `velero` | see the object-store note in §8 |
+| [13 — MetalLB](day-2-stateful-storage-and-exposure/lab-13-metallb.docx) | kind | `docker`, `kind` | reuses Lab 1's multi-node cluster; Step 4 builds a second cluster for the Cilium comparison |
+| [14 — Loki](day-2-stateful-storage-and-exposure/lab-14-loki.docx) | GKE | `helm`, `logcli` | |
 
 ### Day 3 — GitOps, Fleet & Governance
 
 | Lab | Platform | Tools beyond `kubectl` | Notes |
 |---|---|---|---|
-| [15 — Flux](day-3-gitops-fleet-and-governance/lab-15-flux.md) | GKE | `flux` | |
-| [16 — Rancher Fleet](day-3-gitops-fleet-and-governance/lab-16-fleet.md) | kind | `helm`, `kind` | **creates three kind clusters** — the heaviest lab in the course |
-| [17 — Kueue](day-3-gitops-fleet-and-governance/lab-17-kueue.md) | GKE | `gcloud` | run **after** Lab 27 |
-| [27 — Tenant Quota Governance](day-3-gitops-fleet-and-governance/lab-27-tenant-quota-governance.md) | kind | `flux` | runs Gitea in-cluster as the Git source; no external Git account needed |
-| [29 — Flux Fleet, Two Clusters](day-3-gitops-fleet-and-governance/lab-29-flux-fleet-two-clusters.md) | kind | `flux` | creates two kind clusters |
+| [15 — Flux](day-3-gitops-fleet-and-governance/lab-15-flux.docx) | GKE | `flux` | |
+| [16 — Rancher Fleet](day-3-gitops-fleet-and-governance/lab-16-fleet.docx) | kind | `helm`, `kind` | **creates three kind clusters** — the heaviest lab in the course |
+| [17 — Kueue](day-3-gitops-fleet-and-governance/lab-17-kueue.docx) | GKE | `gcloud` | run **after** Lab 27 |
+| [27 — Tenant Quota Governance](day-3-gitops-fleet-and-governance/lab-27-tenant-quota-governance.docx) | kind | `flux` | runs Gitea in-cluster as the Git source; no external Git account needed |
+| [29 — Flux Fleet, Two Clusters](day-3-gitops-fleet-and-governance/lab-29-flux-fleet-two-clusters.docx) | kind | `flux` | creates two kind clusters |
 
 > **Module 10 and Module 11 each have two labs.** For Module 10, run **Lab 29** (Flux — what the outline specifies); Lab 16 is the Rancher Fleet alternative. For Module 11, run **Lab 27 first** (it builds the quota contract), then **Lab 17** (the tenant borrows against it).
 
@@ -248,9 +247,9 @@ kubectl auth can-i create deployments
 
 | Lab | Platform | Tools |
 |---|---|---|
-| [3 — etcd Quota & Recovery](additional/optional-day-control-plane-and-war-room/lab-03-etcd-quota-recovery.md) | kind | `docker`, `kind` (`etcdctl` is used inside the container) |
-| [6 — Operators & Finalizers](additional/optional-day-control-plane-and-war-room/lab-06-operators-finalizers.md) | GKE | `gcloud` |
-| [26 — Capstone War-Room](additional/optional-day-control-plane-and-war-room/lab-26-capstone.md) | kind | `docker`, `kind`; the instructor runs `artifacts/lab-26/seed-warroom.sh` |
+| [3 — etcd Quota & Recovery](additional/optional-day-control-plane-and-war-room/lab-03-etcd-quota-recovery.docx) | kind | `docker`, `kind` (`etcdctl` is used inside the container) |
+| [6 — Operators & Finalizers](additional/optional-day-control-plane-and-war-room/lab-06-operators-finalizers.docx) | GKE | `gcloud` |
+| [26 — Capstone War-Room](additional/optional-day-control-plane-and-war-room/lab-26-capstone.docx) | kind | `docker`, `kind`; the instructor runs `artifacts/lab-26/seed-warroom.sh` |
 
 ---
 
@@ -280,7 +279,7 @@ These are real failures hit while building this course. Check them before you te
 ## 9. If something doesn't match
 
 1. Check the lab's own **Before you start** — it is authoritative.
-2. Check [`COURSE-MAP.md`](COURSE-MAP.md) for which labs belong to which day.
+2. Check [`COURSE-MAP.docx`](COURSE-MAP.docx) for which labs belong to which day.
 3. Check the lab's evidence transcript under `artifacts/<lab>/evidence/` — it shows the exact output from a real run, with the versions used recorded at the top.
 
 Version drift in fast-moving CLIs (`gcloud`, `cilium`, `flux`, `velero`) is the most common reason output differs from a lab.

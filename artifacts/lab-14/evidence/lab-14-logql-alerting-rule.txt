@@ -1,0 +1,62 @@
+Advanced Kubernetes (Nutanix) — Lab 14 (Module 8) — a LogQL alerting rule
+Captured 2026-09-26 12:13 IST. kind, Kubernetes 1.37.0, Loki 3.3.2 single-binary
+with the ruler enabled. All output real.
+=========================================================================
+
+### 1. The rule, delivered as a file the ruler reads
+groups:
+  - name: checkout-errors
+    interval: 15s
+    rules:
+      - alert: CheckoutErrorBurst
+        expr: |
+          sum(count_over_time({namespace="shop"} |= "PAYMENT_DECLINED" [1m])) > 5
+        for: 30s
+        labels: { severity: page, team: payments }
+        annotations:
+          summary: "Checkout is declining payments at an abnormal rate"
+          description: "More than 5 PAYMENT_DECLINED lines in the last minute."
+
+### 2. Ruler config that makes Loki evaluate it
+ruler:
+  storage:
+    type: local
+    local: { directory: /etc/loki/rules }
+  rule_path: /loki/rules-tmp
+  ring: { kvstore: { store: inmemory } }
+  enable_api: true
+  evaluation_interval: 15s
+limits_config:
+
+### 3. The rule is loaded, and firing
+$ wget -qO- http://localhost:3100/prometheus/api/v1/rules
+  group    : checkout-errors
+  alert    : CheckoutErrorBurst
+  query    : (sum(count_over_time({namespace="shop"} |= "PAYMENT_DECLINED"[1m])) > 5)
+  for      : 30s
+  labels   : {'severity': 'page', 'team': 'payments'}
+  STATE    : FIRING
+  instance : state=firing activeAt=2026-09-26T07:26:40.10492725Z value=4.8e+01
+
+  Observed progression: INACTIVE -> PENDING (threshold crossed) -> FIRING (held for 30s).
+
+### 4. The data behind it
+$ query: sum(count_over_time({namespace="shop"} |= "PAYMENT_DECLINED" [1m]))
+  value: none
+
+-> threshold is > 5. The rule went PENDING as soon as the count crossed it,
+   then FIRING once it had held for the 'for: 30s' window.
+
+### 5. Control-plane logs are just pod logs
+$ ls /var/log/pods on the control-plane node
+  kube-system_etcd-loki-lab-control-plane_1392c4d213c2c24c6e891c98f1ffde3f
+  kube-system_kube-apiserver-loki-lab-control-plane_7482ee26993f167db0203c2e2dea92a7
+  kube-system_kube-controller-manager-loki-lab-control-plane_493aeb6ff8c29c2b910129617da74259
+  kube-system_kube-scheduler-loki-lab-control-plane_b4af5f9a5e313f4e537427838f487a0d
+
+-> kubeadm runs the control plane as static Pods, so kube-apiserver, etcd,
+   kube-scheduler and kube-controller-manager write to /var/log/pods like
+   anything else. The same Promtail scrape picks them up, and the selector is:
+     {namespace="kube-system", container="kube-apiserver"}
+   On a managed control plane (GKE, and NKE's managed option) those logs are NOT
+   on a node you can reach — they come from the provider's logging stack instead.

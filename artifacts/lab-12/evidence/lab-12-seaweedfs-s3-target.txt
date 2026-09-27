@@ -1,0 +1,109 @@
+# Lab 12 — Step 1 evidence: MinIO is unavailable; SeaweedFS as the Velero S3 target
+# kind cluster 'veleros3' (Kubernetes v1.37.0), Velero v1.18.2, velero-plugin-for-aws v1.13.0
+# SeaweedFS 3.80, uploader kopia, csi-driver-host-path v1.18.0 for the data volume
+# Captured 2026-09-27T06:09:50Z
+
+================ 1. Why this lab no longer uses MinIO ================
+$ docker pull minio/minio:latest
+Error response from daemon: pull access denied for minio/minio, repository does not exist or may require 'docker login'
+$ docker pull quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+Error response from daemon: unknown: failed to resolve reference "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1": unexpected status from HEAD request to https://quay.io/v2/minio/minio/manifests/RELEASE.2025-09-07T16-13-09Z-cpuv1: 401 Unauthorized
+$ docker pull quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
+Error response from daemon: unknown: failed to resolve reference "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1": unexpected status from HEAD request to https://quay.io/v2/minio/mc/manifests/RELEASE.2025-08-13T08-35-41Z-cpuv1: 401 UNAUTHORIZED
+
+$ docker pull chrislusf/seaweedfs:3.80                             -> OK
+$ docker pull zenko/cloudserver:latest                             -> OK
+$ docker pull adobe/s3mock:latest                                  -> OK
+$ docker pull amazon/aws-cli:latest                                -> OK
+
+================ 2. SeaweedFS needs real S3 identities, supplied via -s3.config ================
+$ kubectl -n velero get secret seaweedfs-s3-config -o jsonpath="{.data.s3config\.json}" | base64 -d
+{
+  "identities": [
+    {
+      "name": "velero",
+      "credentials": [ { "accessKey": "veleroaccess", "secretKey": "verosecret123" } ],
+      "actions": ["Admin","Read","Write","List","Tagging"]
+    }
+  ]
+}
+
+$ kubectl -n velero get deploy minio -o jsonpath="{.spec.template.spec.containers[0].args}"
+["server","-dir=/data","-s3","-s3.port=9000","-s3.config=/etc/seaweedfs/s3config.json","-master.volumeSizeLimitMB=128"]
+
+$ kubectl -n velero get pods
+NAME                      READY   STATUS    RESTARTS   AGE
+minio-7856f76d85-gn6hc    1/1     Running   0          11m
+node-agent-wdg6m          1/1     Running   0          10m
+velero-566f786554-2n8pc   1/1     Running   0          10m
+
+================ 3. The bucket is created with the AWS CLI — the MinIO client (mc) is also gone ================
+$ kubectl -n velero run mkbucket --rm -i --restart=Never --image=amazon/aws-cli \
+    --command -- sh -c "aws --endpoint-url http://minio.velero.svc:9000 s3 ls"
+2026-09-27 05:59:12 velero
+
+================ 4. Velero validates the location: SeaweedFS is a working S3 backend ================
+$ velero backup-location get
+NAME      PROVIDER   BUCKET/PREFIX   PHASE       LAST VALIDATED                  ACCESS MODE   DEFAULT
+default   aws        velero          Available   2026-09-27 11:39:19 +0530 IST   ReadWrite     true
+
+================ 5. The trap: a backup that says Completed and captures NO volume data ================
+# kind's default 'standard' StorageClass (rancher.io/local-path) produces hostPath PVs,
+# and Velero's file-system backup refuses them. The backup still reports Completed.
+$ velero backup get
+NAME       STATUS      ERRORS   WARNINGS   CREATED                         EXPIRES   STORAGE LOCATION   QUEUE POSITION   SELECTOR
+shop-csi   Completed   0        0          2026-09-27 11:35:41 +0530 IST   29d       default                             <none>
+shop-fs    Completed   0        1          2026-09-27 11:31:39 +0530 IST   29d       default                             <none>
+
+$ kubectl -n velero logs deploy/velero | grep "hostPath volume which is not supported"
+time="2026-09-27T06:01:41Z" level=warning msg="Volume d in pod shop/catalog-7d9486b467-t69vs is a hostPath volume which is not supported for pod volume backup, skipping" backup=velero/shop-fs logSource="pkg/podvolume/backupper.go:347" name=catalog-7d9486b467-t69vs namespace=shop resource=pods
+
+# note the WARNINGS column: shop-fs has 1, and produced zero PodVolumeBackup objects.
+# This is NOT a SeaweedFS problem — the object store validated fine. It is the volume type.
+
+================ 6. On a CSI volume, kopia backs the data up properly ================
+$ kubectl get pv -o custom-columns=NAME:.metadata.name,CSI:.spec.csi.driver,SC:.spec.storageClassName
+NAME                                       CSI                   SC
+pvc-5c01be01-1559-4c30-8c46-3047481aabf5   hostpath.csi.k8s.io   csi-hostpath-sc
+
+$ kubectl -n velero get podvolumebackup -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,UPLOADER:.spec.uploaderType,VOLUME:.spec.volume,BYTES:.status.progress.totalBytes
+NAME             STATUS      UPLOADER   VOLUME   BYTES
+shop-csi-fw7xz   Completed   kopia      d        18
+
+================ 7. Destroy the namespace and restore it — data included ================
+$ kubectl -n shop exec $POD -- cat /data/catalog.txt      # before
+widget-9000=42.00
+
+$ velero backup create shop-verify --include-namespaces shop --default-volumes-to-fs-backup --wait
+Backup completed with status: Completed. You may check for more information using the commands `velero backup describe shop-verify` and `velero backup logs shop-verify`.
+
+$ kubectl delete ns shop
+namespace "shop" deleted
+$ kubectl get ns shop
+Error from server (NotFound): namespaces "shop" not found
+
+$ velero restore create shop-back-2 --from-backup shop-verify --wait
+Restore completed with status: Completed. You may check for more information using the commands `velero restore describe shop-back-2` and `velero restore logs shop-back-2`.
+
+$ velero restore get
+NAME          BACKUP        STATUS      STARTED                         COMPLETED                       ERRORS   WARNINGS   CREATED                         SELECTOR
+shop-back     shop-csi      Completed   2026-09-27 11:36:51 +0530 IST   2026-09-27 11:37:05 +0530 IST   0        1          2026-09-27 11:36:51 +0530 IST   <none>
+shop-back-2   shop-verify   Completed   2026-09-27 11:41:05 +0530 IST   2026-09-27 11:41:10 +0530 IST   0        1          2026-09-27 11:41:05 +0530 IST   <none>
+
+$ kubectl -n shop get deploy,svc,pvc
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/catalog   1/1     1            1           4s
+
+NAME              TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/catalog   ClusterIP   10.96.248.12   <none>        80/TCP    4s
+
+NAME                                 STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/catalog-data   Bound    pvc-f1e5bade-9c01-48ef-82f1-5812c803bdf2   1Gi        RWO            csi-hostpath-sc   <unset>                 4s
+
+$ kubectl -n shop exec $POD -c app -- cat /data/catalog.txt      # after the namespace was destroyed
+widget-9000=42.00
+
+$ kubectl -n velero get podvolumerestore -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,UPLOADER:.spec.uploaderType,BYTES:.status.progress.totalBytes
+NAME                STATUS      UPLOADER   BYTES
+shop-back-2-2cmx6   Completed   kopia      18
+shop-back-gkrtq     Completed   kopia      18
