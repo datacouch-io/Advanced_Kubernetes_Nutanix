@@ -43,7 +43,15 @@ Normally you *push* changes to a cluster: you run `kubectl apply` from your lapt
 
 Because Flux reconciles on a loop, the cluster is *always* converging on Git. Change the cluster by hand and it drifts; Flux notices and reverts it. The only durable way to change anything is to change Git.
 
-![Architecture diagram](artifacts/lab-15/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    GIT["Git repo<br/>(desired state: podinfo manifests)"] -->|"GitRepository: poll every 1m"| SRC["source-controller<br/>(fetches the revision)"]
+    SRC --> KUST["Kustomization: apply ./kustomize<br/>prune=true, interval=1m"]
+    KUST -->|"kustomize-controller applies"| CLUSTER["cluster: Deployment + Service + HPA"]
+    CLUSTER -.->|"someone deletes the Deployment (drift)"| DRIFT["cluster ≠ Git"]
+    DRIFT -->|"next reconcile"| KUST
+    KUST -->|"re-applies from Git"| CLUSTER
+```
 
 ---
 
@@ -205,6 +213,8 @@ The same message is on the resource, which is where you'd read it in a pipeline:
 kubectl -n flux-system get kustomization shop-config \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}'
 ```
+
+![Flux refuses the bad commit: READY False naming .spec.replicas expected numeric (int or float), got string](../artifacts/lab-15/screenshots/03-broken-manifest-refused.png)
 
 **Now check what is actually running:**
 

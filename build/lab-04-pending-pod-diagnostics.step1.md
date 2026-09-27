@@ -41,7 +41,24 @@ A `Pending` Pod is one the scheduler looked at and couldn't place. The scheduler
 3. **Node affinity / `nodeSelector`** — the Pod can demand labels a node must have.
 4. **Volume binding** — a Pod whose PVC can't be bound can't schedule.
 
-![Architecture diagram](artifacts/lab-04/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    POD["new Pod: Pending<br/>PodScheduled=False"] --> SCHED["kube-scheduler, Filter phase"]
+    SCHED --> F1{"fits cpu/memory?"}
+    F1 -->|"no"| R1["Insufficient cpu/memory"]
+    F1 -->|"yes"| F2{"tolerates node taints?"}
+    F2 -->|"no"| R2["untolerated taint"]
+    F2 -->|"yes"| F3{"matches nodeSelector/affinity?"}
+    F3 -->|"no"| R3["node affinity/selector mismatch"]
+    F3 -->|"yes"| F4{"PVCs bound?"}
+    F4 -->|"no"| R4["unbound PersistentVolumeClaims"]
+    F4 -->|"yes"| BIND["Score, then bind to best node"]
+    BIND --> RUN["Pod Running"]
+    R1 -.->|"FailedScheduling"| STUCK["stays Pending"]
+    R2 -.-> STUCK
+    R3 -.-> STUCK
+    R4 -.-> STUCK
+```
 
 ---
 
@@ -284,6 +301,8 @@ real nodes : 1
 
 `kubeletVersion: fake` and `CONTAINER-RUNTIME: kwok-v0.8.0` are the tell.
 
+![Twenty fake nodes alongside the real ones — kubeletVersion fake and a kwok container runtime give them away](../artifacts/lab-04/screenshots/07-kwok-twenty-fake-nodes.png)
+
 Now schedule against them — Pods need a toleration for `kwok.x-k8s.io/node` and a
 `nodeSelector: {type: kwok}`:
 
@@ -300,9 +319,12 @@ kubectl get pods -o wide | awk '{print $7}' | sort | uniq -c
 total Running : 100 across 20 nodes
 ```
 
-**What this means.** One hundred Pods, spread evenly over twenty nodes, on a laptop running a single
-real container. Every scheduling decision here is the genuine scheduler making genuine choices — only
-the kubelet is fictional.
+**What this means.** One hundred Pods, spread evenly over twenty nodes, while the only real
+containers on the laptop are the two `kind` nodes themselves. Every scheduling decision here is the
+genuine scheduler making genuine choices — only the kubelet is fictional.
+
+![The 100 Pods land five to a node across all twenty, with no real container behind any of them](../artifacts/lab-04/screenshots/08-kwok-100-pods-across-20-nodes.png)
+
 
 **Cordon one and watch the node-controller respond:**
 

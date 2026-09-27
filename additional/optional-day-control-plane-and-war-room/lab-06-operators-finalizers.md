@@ -230,6 +230,9 @@ t+90   deploy=5  hpa=5
 
 Pods are being created and destroyed continuously. Now try to find that in the usual places.
 
+![Ninety seconds of sampling: the Deployment oscillates 5, 2, 5, 2, 5, 2 while the HPA minimum never moves off 5](../../artifacts/lab-06/screenshots/06-hot-loop-oscillation.png)
+
+
 ### Why this is hard to see
 
 ```bash
@@ -238,9 +241,16 @@ kubectl -n shop get hpa api -o jsonpath='{.status.conditions}'
 ```
 
 ```
-ready = True    msg = Applied revision: main@sha1:f4c0af80...
-hpa   = AbleToScale True, ScalingActive True
+ready = True    msg = Applied revision: main@sha1:5e998bf4...
+hpa   = AbleToScale True, ScaledToZero False, ScalingActive False
 ```
+
+> ⚠️ **`ScalingActive False` is not the bug, and it does not stop the loop.** On `kind`, the
+> metrics pipeline often serves node metrics but not Pod metrics, so the HPA reports
+> `failed to get cpu utilization: no metrics returned from resource metrics API` and `TARGETS`
+> shows `cpu: <unknown>`. It still enforces **`minReplicas: 5`** — which is all this fight needs.
+> If your cluster has working Pod metrics you will see `ScalingActive True` instead; the
+> oscillation is identical either way.
 
 **Both controllers report success.** Flux says it applied the revision — true. The HPA says it is
 scaling normally — also true. Neither can see the other, and **nothing in either status will ever
@@ -259,6 +269,9 @@ COUNT   REASON              MSG
 9       ScalingReplicaSet   Scaled up replica set api-97fd78bc6 from 2 to 5
 9       ScalingReplicaSet   Scaled down replica set api-97fd78bc6 from 5 to 2
 ```
+
+![Flux reports Ready True with the revision applied and the HPA reports no error, while the ScalingReplicaSet events show the same scale-up and scale-down repeated four times each](../../artifacts/lab-06/screenshots/07-both-controllers-report-success.png)
+
 
 **Nine up, nine down.** Kubernetes aggregates repeated events into one record with a `count`, so the
 default `kubectl get events` output shows this as two unremarkable lines. Ask for the count column
@@ -315,7 +328,7 @@ Leave the `advk8s-day2` cluster running for Labs 6 and C.
 | A finalizer-blocked object wedges its whole namespace | 3 | `stuck-demo` in `Terminating` |
 | Namespace `status.conditions` name the blockage | 3 | `NamespaceContentRemaining` / `NamespaceFinalizersRemaining` |
 | A hot loop is two controllers each succeeding, forever | 4 | replicas oscillating `2↔5` while both report Ready |
-| Controller status never reveals a fight | 4 | Flux `Applied revision`, HPA `ScalingActive True` |
+| Controller status never reveals a fight | 4 | Flux `Applied revision` while the replica count oscillates |
 | Event `.count` is where repetition shows | 4 | one line, `count=9` — invisible in default output |
 | One field, one owner — two owners is a design error | 4 | removing `replicas` from Git settled it at 5/5 |
 | Deleting `replicas` momentarily scales to 1 | 4 gotcha | `Scaled down from 2 to 1` before the HPA recovered it |

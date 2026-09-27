@@ -214,6 +214,8 @@ kubectl -n flux-system get kustomization shop-config \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}'
 ```
 
+![Flux refuses the bad commit: READY False naming .spec.replicas expected numeric (int or float), got string](../artifacts/lab-15/screenshots/03-broken-manifest-refused.png)
+
 **Now check what is actually running:**
 
 ```bash
