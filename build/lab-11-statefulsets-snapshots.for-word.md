@@ -41,14 +41,7 @@ A **StatefulSet** is how you run stateful apps: each replica gets a stable ident
 
 A **`VolumeSnapshot`** asks that CSI driver to take a point-in-time copy of the volume. It's fast and space-efficient, and — crucially — you can create a **new PVC from a snapshot** (`spec.dataSource`), which is how you recover. That's the cycle you'll run: snapshot → destroy → restore.
 
-```mermaid
-flowchart TB
-    SS["StatefulSet db-0"] --> PVC["PVC data-db-0<br/>(pd.csi, 1Gi)"]
-    PVC --> PD["real Persistent Disk<br/>/data/message = important-data-v1"]
-    PD -->|"VolumeSnapshot"| SNAP["snapshot db-snap<br/>readyToUse = true"]
-    PVC -.->|"delete StatefulSet + PVC"| GONE["volume gone"]
-    SNAP -->|"dataSource on a new PVC"| RESTORE["PVC data-restored<br/>/data/message intact"]
-```
+![Architecture diagram](artifacts/lab-11/diagrams/diagram.png)
 
 ---
 
