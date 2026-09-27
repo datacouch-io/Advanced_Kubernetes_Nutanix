@@ -189,6 +189,9 @@ $ kubectl -n kube-system get ds,deploy -o name | grep -iE "metallb|speaker"
 
 MetalLB needed a `controller` Deployment plus a `speaker` DaemonSet on every node. Cilium needs neither — the operator you already run does the allocation, and the agent you already run does the announcing. **That is the single biggest practical difference.**
 
+![No speaker and no controller on the Cilium cluster, and a LoadBalancer Service sitting at pending with nothing to serve it](../artifacts/lab-13/screenshots/04-pending-no-implementation.png)
+
+
 > ⚠️ **Gotcha — `l2announcements.enabled=true` must be set through Helm, not by patching the ConfigMap.** Setting `enable-l2-announcements: "true"` in `cilium-config` and restarting the DaemonSet *does* turn the feature on — the agent logs `--enable-l2-announcements='true'` — but the Helm chart is also what renders the RBAC rule for leases. Without it every announcement attempt fails in a tight loop:
 >
 > ```console
@@ -289,6 +292,9 @@ $ curl -o /dev/null -w '%{http_code}' http://172.19.255.200
 
 The Service looks perfect and the address is dead. `LoadBalancer IPs` must be claimed by a `CiliumL2AnnouncementPolicy` before any node answers ARP for them:
 
+![The pool has allocated 172.19.255.200 and the Service shows it with ipMode VIP — yet curl returns http_code=000](../artifacts/lab-13/screenshots/05-lbipam-allocates-but-does-not-announce.png)
+
+
 ```bash
 kubectl apply -f - <<'EOF'
 apiVersion: cilium.io/v2alpha1
@@ -309,21 +315,24 @@ $ curl -o /dev/null -w '%{http_code}' http://172.19.255.200   ->   200
 $ curl -o /dev/null -w '%{http_code}' http://172.19.255.240   ->   200
 
 $ kubectl -n kube-system get lease -o custom-columns=LEASE:.metadata.name,HOLDER:.spec.holderIdentity | grep l2announce
-cilium-l2announce-default-shopfront         lbipam-control-plane
-cilium-l2announce-default-shopfront-fixed   lbipam-control-plane
-cilium-l2announce-default-tenant-b          lbipam-control-plane
+cilium-l2announce-default-shopfront    lbipam-control-plane
 
 $ docker exec lbipam-control-plane cat /sys/class/net/eth0/address
-96:28:36:56:3b:56
+0e:fb:91:c9:54:e6
 $ docker exec lbipam-worker cat /sys/class/net/eth0/address
-2a:9c:8d:4b:af:61
+b6:bb:b3:f9:fe:eb
 
 $ arping -c2 172.19.255.200
-Unicast reply from 172.19.255.200 [96:28:36:56:3B:56]  0.538ms
-Unicast reply from 172.19.255.200 [96:28:36:56:3B:56]  0.610ms
+Unicast reply from 172.19.255.200 [0E:FB:91:C9:54:E6]  0.533ms
+Unicast reply from 172.19.255.200 [0E:FB:91:C9:54:E6]  0.569ms
 ```
 
 The replying MAC is the **lease holder's** `eth0`. Cilium keeps one Kubernetes `Lease` per Service and the holder is the only node that answers — **architecturally identical to MetalLB L2 mode**, including the same single-node failure domain and the same failover window you measured in Step 3. Switching from MetalLB to LB-IPAM does *not* buy you multi-node ingress.
+
+![With the announcement policy in place the same address returns http_code=200, and a Lease appears naming the node that answers](../artifacts/lab-13/screenshots/06-l2-announcement-makes-it-reachable.png)
+
+![The ARP reply comes from 0E:FB:91:C9:54:E6 — the lease holder's eth0, not the worker's](../artifacts/lab-13/screenshots/07-arp-reply-is-the-lease-holder.png)
+
 
 The agent exposes what it is announcing:
 
@@ -380,7 +389,10 @@ shopfront         LoadBalancer   10.96.59.24     <pending>     80:31166/TCP   12
 shopfront-fixed   LoadBalancer   10.96.172.101   <pending>     80:32296/TCP   9m23s
 ```
 
-> 🚨 **Gotcha 2 — narrowing a pool's `serviceSelector` revokes addresses from live Services.** Two working, traffic-serving Services lost their external IPs **12 seconds** after an edit to a pool, with no warning and no admission rejection. Re-labelling the Services `tenant=a` restored the *same* two addresses and traffic resumed (`http_code=200`), but during the gap they were unreachable from outside the cluster. Editing a `CiliumLoadBalancerIPPool` selector in production is an outage-class change — treat it like editing a firewall rule, not like adding a label.
+> 🚨 **Gotcha 2 — narrowing a pool's `serviceSelector` revokes addresses from live Services.** A working, traffic-serving Service lost its external IP **fourteen seconds** after an edit to a pool, with no warning and no admission rejection — the capture below shows the address present, the patch, and `<pending>` with `reason: no_pool` immediately after. Restoring the selector brings the *same* address back and traffic resumes, but during the gap it is unreachable from outside the cluster. Editing a `CiliumLoadBalancerIPPool` selector in production is an outage-class change — treat it like editing a firewall rule, not like adding a label.
+
+![A serving Service on 172.19.255.200, one patch to the pool's serviceSelector, and fourteen seconds later it is pending with reason no_pool](../artifacts/lab-13/screenshots/10-narrowing-a-pool-revokes-live-addresses.png)
+
 
 ### 4.5 — Overlapping pools are refused, not silently merged
 
@@ -397,6 +409,9 @@ Pool conflicts since range '172.19.255.240 - 172.19.255.250' overlaps range
 ```
 
 The conflicting pool is marked `CONFLICTING=True` and stops allocating; the existing pool keeps working. This is genuinely better than MetalLB, where overlapping `IPAddressPool` ranges are not flagged for you.
+
+![The overlapping pool marked CONFLICTING True, with a status message naming both ranges and the pool it clashes with](../artifacts/lab-13/screenshots/08-overlapping-pools-flagged.png)
+
 
 > ⚠️ **Gotcha — when a Service matches no pool, `kubectl describe` tells you nothing.** There is no Event at all:
 >
@@ -415,6 +430,9 @@ The conflicting pool is marked `CONFLICTING=True` and stops allocating; the exis
 >
 > Make `kubectl get svc <name> -o jsonpath='{.status.conditions}'` the first thing you run when an LB-IPAM address does not appear.
 
+![A Service matching no pool: pending, no events at all, and the explanation only on .status.conditions as reason no_pool](../artifacts/lab-13/screenshots/09-unmatched-service-silent.png)
+
+
 ### 4.6 — When to prefer the Cilium BGP control plane over MetalLB BGP mode
 
 Everything above was L2. Both projects also speak BGP, and in Cilium that is a **third** feature, off by default — the CRDs are not even registered until you enable it:
@@ -427,6 +445,9 @@ $ kubectl api-resources --api-group=cilium.io | grep -i bgp
 ```
 
 Enable it with `--set bgpControlPlane.enabled=true`, then configure `CiliumBGPClusterConfig` / `CiliumBGPPeerConfig`.
+
+![enable-bgp-control-plane is empty and no BGP resources are registered at all — ten cilium.io resources, none of them BGP](../artifacts/lab-13/screenshots/11-bgp-is-a-separate-feature.png)
+
 
 Guidance for choosing — **architectural judgement, not something this lab measured**:
 
@@ -486,9 +507,9 @@ kubectl delete deployment web --ignore-not-found
 | L2 mode fails over (brief window), it doesn't balance | 3 gotcha | curl `000` during the window |
 | Cilium LB-IPAM does the same job with **no extra components** | 4.1 | no `speaker`/`controller`; operator + agent only |
 | LB-IPAM **allocates but does not announce** | 4.3 | `EXTERNAL-IP` set, `curl` → `000` until `CiliumL2AnnouncementPolicy` exists |
-| Cilium L2 has the **same single-node failure domain** as MetalLB | 4.3 | `arping` MAC `96:28:36:56:3B:56` == the `Lease` holder's `eth0` |
+| Cilium L2 has the **same single-node failure domain** as MetalLB | 4.3 | `arping` MAC `0E:FB:91:C9:54:E6` == the `Lease` holder's `eth0` |
 | An unscoped pool is a catch-all that overrides per-tenant pools | 4.4 | labelled `tenant=b` Service still got `172.19.255.241` from `shop-pool` |
-| **Narrowing a pool selector revokes live addresses** | 4.4 | two serving Services → `<pending>` in 12s, `reason: no_pool` |
+| **Narrowing a pool selector revokes live addresses** | 4.4 | a serving Service → `<pending>` in 14s, `reason: no_pool` |
 | Overlapping pools are flagged, not merged | 4.5 | `CONFLICTING=True` + explicit overlap message |
 | An unmatched Service explains itself only in `.status.conditions` | 4.5 gotcha | `Events: <none>`, condition `cilium.io/IPAMRequestSatisfied=False` |
 | Cilium BGP is a third, separate feature | 4.6 | `enable-bgp-control-plane` empty, no BGP CRDs registered |
