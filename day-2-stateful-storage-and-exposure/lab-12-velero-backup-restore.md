@@ -75,6 +75,9 @@ flowchart TB
 > Everything downstream keeps the **Service name `minio`**, so Steps 2–7, all the `s3Url` values and every
 > command in the rest of the lab are unchanged.
 
+![All three MinIO images fail to pull while SeaweedFS and the AWS CLI succeed](../artifacts/lab-12/screenshots/04-minio-images-unavailable.png)
+
+
 **Goal:** deploy an S3-compatible object store, create a bucket, and install Velero pointing at it.
 
 > ✅ **Verified end-to-end 2026-09-27** on `kind` v1.37.0 with **Velero v1.18.2**, `velero-plugin-for-aws v1.13.0`, **SeaweedFS 3.80** and the `kopia` uploader: backup location `Available`, `PodVolumeBackup` and `PodVolumeRestore` both `Completed`, and `widget-9000=42.00` recovered after the namespace was destroyed. Transcript: [`artifacts/lab-12/evidence/lab-12-seaweedfs-s3-target.txt`](../artifacts/lab-12/evidence/lab-12-seaweedfs-s3-target.txt).
@@ -199,6 +202,9 @@ velero-566f786554-2n8pc   1/1     Running   0          10m
 
 **What this means:** Velero is installed and its S3 target is validated. `PHASE: Available` is the check that matters — it proves Velero authenticated to the bucket and can write to it. On NKE you'd point `s3Url` at **Nutanix Objects** and use its access keys instead; nothing else changes.
 
+![The three Pods up — the SeaweedFS Deployment still named minio, the node-agent and velero itself — and the backup location reporting Available](../artifacts/lab-12/screenshots/05-seaweedfs-backup-location-available.png)
+
+
 > ⚠️ **Gotcha — `--use-node-agent` is what backs up *data*; without it you get objects only.** The `node-agent` DaemonSet is the component that reads volume contents (via `kopia`). If it is missing or not `Running`, backups still complete and still say `Completed`, but no `PodVolumeBackup` object is created and a restore gives you an empty volume. Confirm all three Pods above are up before you trust a backup.
 
 > 🚨 **Gotcha — on a `kind` cluster the default StorageClass silently defeats file-system backup.** kind's `standard` class (`rancher.io/local-path`) provisions **hostPath** PVs, and Velero refuses to file-system-backup those. The only signal is one warning in the server log:
@@ -217,7 +223,13 @@ velero-566f786554-2n8pc   1/1     Running   0          10m
 >
 > A CSI driver in the `CSI` column means fs-backup will work; an empty column means it will not. On GKE (`pd.csi.storage.gke.io`) and on Nutanix CSI this does not arise. On `kind`, install a real CSI driver — the setup at the top of Lab 11's Steps 5–7 is exactly what's needed — and point the PVC's `storageClassName` at it.
 
+![The trap in one view: the backup says Completed with WARNINGS 1, no PodVolumeBackup exists at all, and the only clue is the server log warning that the hostPath volume was skipped](../artifacts/lab-12/screenshots/06-hostpath-defeats-fs-backup.png)
+
+
 With a CSI-backed volume the same backup behaves properly:
+
+![The same workload on a CSI volume: the PV names hostpath.csi.k8s.io, and a PodVolumeBackup completes via kopia](../artifacts/lab-12/screenshots/07-csi-volume-backed-up-by-kopia.png)
+
 
 ```console
 $ kubectl -n velero get podvolumebackup -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,UPLOADER:.spec.uploaderType,VOLUME:.spec.volume,BYTES:.status.progress.totalBytes
@@ -226,6 +238,9 @@ shop-csi-fw7xz   Completed   kopia      d        18
 ```
 
 and after `kubectl delete ns shop`, the restore brings the data back:
+
+![The restore completed: Deployment, Service and PVC recreated, widget-9000=42.00 read back out of the volume, and a PodVolumeRestore completed via kopia](../artifacts/lab-12/screenshots/08-namespace-destroyed-and-restored.png)
+
 
 ```console
 $ velero restore create shop-back-2 --from-backup shop-verify --wait
