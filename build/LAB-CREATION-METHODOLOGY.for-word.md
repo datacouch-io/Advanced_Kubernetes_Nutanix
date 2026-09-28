@@ -1,4 +1,3 @@
-# Lab Creation Methodology
 
 The standing prompt and working practice behind every lab in this repository. Reuse the prompt
 verbatim; adapt only the scope paragraph at the top.
@@ -30,7 +29,7 @@ described an older `## N.1 / Verified result` shape that no lab follows any more
 > # Lab N — Plain-language title (Technical subject in parentheses)
 > **Day X · Section name**
 >
-> > ✅ **Tested end-to-end** on <exact platform, versions>. <What the reader gets.>
+> > YES — **Tested end-to-end** on <exact platform, versions>. <What the reader gets.>
 >
 > ## What you'll learn        3–6 bullets, naming real tools, resources and failure modes
 > ## What you'll do           one paragraph, the narrative arc of the lab
