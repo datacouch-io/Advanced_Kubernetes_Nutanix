@@ -47,7 +47,18 @@ Step 2 is this lab. Before APF existed, one misbehaving client — a hot LIST lo
 - **`FlowSchema`** — the matcher: "requests from *these* identities go to *this* lane."
 - **`PriorityLevelConfiguration`** — the lane itself: how many seats (its `nominalConcurrencyShares`), and whether an overflow request waits (`Queue`) or is rejected immediately (`Reject`).
 
-![Architecture diagram](artifacts/lab-02/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    CLIENT["kubectl / client<br/>GET /api/v1/pods"] --> TLS["TLS termination<br/>+ AuthN (cert / token)"]
+    TLS --> APF{"API Priority &amp; Fairness<br/>match a FlowSchema"}
+    APF -->|"classify by user / SA / group"| LANE["PriorityLevel<br/>concurrency seats + queue"]
+    LANE -->|"seat available"| AUTHZ["AuthZ (RBAC)"]
+    LANE -.->|"no seat, Reject type"| R429["429 Too Many Requests"]
+    AUTHZ --> MADM["Mutating admission<br/>+ mutating webhooks"]
+    MADM --> VALID["Schema validation<br/>+ validating admission"]
+    VALID --> ETCD["etcd read / write"]
+    ETCD --> RESP["200 + response headers<br/>X-Kubernetes-Pf-*"]
+```
 
 ---
 
@@ -63,7 +74,7 @@ kubectl get ns -v=8 2>&1 | grep -iE '"Request" verb=|"Response" status=|X-Kubern
 
 **What you should see:** the request line — `"Request" verb="GET" url="https://127.0.0.1.../api/v1/namespaces?limit=500"` — then `"Response" status="200 OK"`, and two headers: `X-Kubernetes-Pf-Flowschema-Uid` and `X-Kubernetes-Pf-Prioritylevel-Uid`.
 
-![A single request with its APF classification headers](artifacts/lab-02/screenshots/01-request-lifecycle-pf-headers.png)
+![A single request with its APF classification headers](../artifacts/lab-02/screenshots/01-request-lifecycle-pf-headers.png)
 
 **What this means:** *every* request the API server serves is classified into a lane, and those two `Pf` (Priority-and-Fairness) headers tell you exactly which FlowSchema matched and which priority level it used. (In `kubectl` v1.37 the `-v=8` output is structured — `verb="GET" url=…` — not the older `GET https://…` line you may see in blog posts.)
 
@@ -82,7 +93,7 @@ kubectl get prioritylevelconfigurations -o 'custom-columns=NAME:.metadata.name,T
 
 **What you should see:** a precedence-ordered list — `exempt` (1) and `probes` (2) at the top, then `system-*` and `kube-controller-manager`/`kube-scheduler` schemas (100–900), and ordinary traffic falling through to `service-accounts` (9000) → `global-default` (9900) → `catch-all` (10000).
 
-![The built-in FlowSchemas and priority levels](artifacts/lab-02/screenshots/02-builtin-flowschemas.png)
+![The built-in FlowSchemas and priority levels](../artifacts/lab-02/screenshots/02-builtin-flowschemas.png)
 
 **What this means:** the design goal is visible right here. `exempt`/`probes` are never throttled (that's how health probes and leader election always get through), and control-plane traffic sits in high-priority reserved lanes. No amount of *user* traffic can starve them, because user traffic lives in the lower-priority lanes at the bottom.
 
@@ -150,7 +161,7 @@ kubectl get --raw /metrics | grep '^apiserver_flowcontrol_nominal_limit_seats' \
 
 **What you should see:** `restricted-storm` gets **3 seats**, versus **49** for `global-default` and **244** for `workload-low`.
 
-![Seat allocation: restricted-storm gets 3 vs global-default 49 vs workload-low 244](artifacts/lab-02/screenshots/03-seats-and-classification.png)
+![Seat allocation: restricted-storm gets 3 vs global-default 49 vs workload-low 244](../artifacts/lab-02/screenshots/03-seats-and-classification.png)
 
 **What this means:** you didn't pick "3" — APF computed it by splitting the API server's total concurrency budget in proportion to each lane's shares (and `nominalConcurrencyShares: 1` is as small as it goes). Three seats is a very narrow lane, which makes the next step deterministic: hit it with more than 3 simultaneous requests and the rest *must* be rejected.
 
@@ -192,7 +203,7 @@ kill $PROXY; rm -rf "$tmp"
 
 **What you should see:** of the 60 storm requests, roughly **43 came back `200` and 17 came back `429`**; the **admin request returned `200`**; and the rejection counter for `restricted-storm` is non-zero.
 
-![The storm is throttled while admin traffic stays 200](artifacts/lab-02/screenshots/04-storm-throttled.png)
+![The storm is throttled while admin traffic stays 200](../artifacts/lab-02/screenshots/04-storm-throttled.png)
 
 **What this means:** APF rejected exactly the overflow that couldn't grab one of the 3 seats — and it did so *inside the storm's own lane*. The admin request, in a different lane, never noticed. That's the whole point: a client hammering the API server is boxed into its lane and cannot starve anyone else. (Your exact split will vary by a few requests run to run.)
 
@@ -214,7 +225,7 @@ kubectl delete clusterrolebinding storm-user-view
 
 **What you should see:** all three objects report `deleted`, and a `kubectl get flowschema storm-user-fs` now returns `NotFound`.
 
-![Cleanup — custom APF objects removed](artifacts/lab-02/screenshots/05-cleanup.png)
+![Cleanup — custom APF objects removed](../artifacts/lab-02/screenshots/05-cleanup.png)
 
 **What this means:** the built-in FlowSchemas and priority levels remain; only your custom lane is gone.
 
@@ -233,10 +244,10 @@ kubectl delete clusterrolebinding storm-user-view
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-02/screenshots/`](artifacts/lab-02/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt`](artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt).
+Real screenshots for this lab are in [`artifacts/lab-02/screenshots/`](../artifacts/lab-02/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt`](../artifacts/lab-02/evidence/lab-02-api-priority-fairness.txt).
 
 ---
 
 ---
 
-**Next:** [Lab 3 — Recover a Cluster That's Gone Read-Only (etcd Quota & Recovery)](lab-03-etcd-quota-recovery.md)
+**Next:** [Lab 3 — Recover a Cluster That's Gone Read-Only (etcd Quota & Recovery)](../additional/optional-day-control-plane-and-war-room/lab-03-etcd-quota-recovery.md)

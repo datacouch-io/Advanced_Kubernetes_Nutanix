@@ -43,7 +43,16 @@ Recovery is always the same three steps, and you need all three:
 2. **`defrag`** — actually shrink the file to return the freed pages (compaction alone doesn't shrink it).
 3. **`alarm disarm`** — the alarm does **not** clear itself; you must explicitly disarm it before writes resume.
 
-![Architecture diagram](artifacts/lab-03/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    WRITE["writes: kubectl create,<br/>controllers, events, leases"] --> DB["etcd boltdb file<br/>grows with every revision"]
+    DB --> CHECK{"DB size &gt;= quota-backend-bytes?"}
+    CHECK -->|"no"| OK["writes accepted"]
+    CHECK -->|"yes"| ALARM["raise NOSPACE alarm"]
+    ALARM --> RO["cluster READ-ONLY<br/>every write: 'database space exceeded'<br/>reads still succeed"]
+    RO --> RECOVER["compact history<br/>defrag (reclaim pages)<br/>alarm disarm"]
+    RECOVER --> OK
+```
 
 ---
 
@@ -83,7 +92,7 @@ e endpoint status -w fields | grep -E '"DBSize"|"DBSizeInUse"|"DBSizeQuota"'
 
 **What you should see:** `DBSizeQuota` now reads **16777216** (16 MiB), with `DBSize` only ~0.5–2 MB — so there's ~15 MB of headroom to fill.
 
-![etcd restarted with a 16 MiB quota](artifacts/lab-03/screenshots/01-quota-lowered.png)
+![etcd restarted with a 16 MiB quota](../../artifacts/lab-03/screenshots/01-quota-lowered.png)
 
 **What this means:** you've turned a 2 GiB safety valve into a 16 MiB one, so the rest of the lab runs in minutes. Everything else about etcd's behaviour is unchanged.
 
@@ -110,7 +119,7 @@ done
 error: failed to create configmap: etcdserver: mvcc: database space exceeded
 ```
 
-![The fill loop fails when the quota is crossed](artifacts/lab-03/screenshots/02-nospace-triggered.png)
+![The fill loop fails when the quota is crossed](../../artifacts/lab-03/screenshots/02-nospace-triggered.png)
 
 **What this means:** the database crossed 16 MiB and etcd raised its NOSPACE alarm. (The exact number where it fails varies by a ConfigMap or two, depending on other cluster churn.) From this instant, etcd is read-only.
 
@@ -135,7 +144,7 @@ e endpoint status -w fields | grep -E 'DBSize|Quota'
 - `kubectl get ns` returns instantly — reads are fine
 - `DBSize` ≈ 17 MB, having met `DBSizeQuota` = 16.8 MB
 
-![NOSPACE alarm, writes blocked, reads fine](artifacts/lab-03/screenshots/03-cluster-read-only.png)
+![NOSPACE alarm, writes blocked, reads fine](../../artifacts/lab-03/screenshots/03-cluster-read-only.png)
 
 **What this means:** it's not just your namespace — the entire cluster can't accept writes. New Pods won't create, Deployments won't scale, `kubectl apply` hangs.
 
@@ -164,7 +173,7 @@ kubectl create configmap canary --from-literal=a=b    # writes work again
 - `alarm disarm` prints the alarm it cleared; `alarm list` is now empty
 - `kubectl create configmap canary` → **`configmap/canary created`**
 
-![Compact, defrag, disarm — writes accepted again](artifacts/lab-03/screenshots/04-recovery.png)
+![Compact, defrag, disarm — writes accepted again](../../artifacts/lab-03/screenshots/04-recovery.png)
 
 **What this means:** the cluster is writable again. Compaction dropped the old revision history, defrag returned the freed pages to the filesystem (shrinking the file below the quota), and disarm cleared the latch.
 
@@ -189,7 +198,7 @@ e endpoint status -w fields | grep -E '"DBSize"|DBSizeInUse'
 
 **What you should see:** `DBSize` falls to **~0.5 MB** — back below where you started.
 
-![Deleting the junk and reclaiming space returns the DB to baseline](artifacts/lab-03/screenshots/05-reclaim-and-cleanup.png)
+![Deleting the junk and reclaiming space returns the DB to baseline](../../artifacts/lab-03/screenshots/05-reclaim-and-cleanup.png)
 
 **What this means:** this is the follow-up most runbooks skip — *disarming gets you writing again, but deleting + compacting + defragging is what actually gives the disk space back.* Compaction only drops superseded revisions; a live ConfigMap keeps its space until you delete it and defrag.
 
@@ -220,10 +229,10 @@ kind delete cluster --name etcd-lab
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-03/screenshots/`](artifacts/lab-03/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt`](artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt).
+Real screenshots for this lab are in [`artifacts/lab-03/screenshots/`](../../artifacts/lab-03/screenshots/) (5 images), and a full command transcript is in [`artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt`](../../artifacts/lab-03/evidence/lab-03-etcd-quota-recovery.txt).
 
 ---
 
 ---
 
-**Next:** [Lab 4 — Diagnose Why a Pod Won't Schedule (Pending-Pod Diagnostics)](lab-04-pending-pod-diagnostics.md)
+**Next:** [Lab 4 — Diagnose Why a Pod Won't Schedule (Pending-Pod Diagnostics)](../../day-1-internals-and-networking/lab-04-pending-pod-diagnostics.md)

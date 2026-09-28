@@ -377,6 +377,11 @@ ERROR:  relation "orders" does not exist
 **What this means.** Backup `Completed`. Restore `Completed`, zero errors. PVC `Bound`. Pod
 `1/1 Running`. **The data is gone.**
 
+![The backup reporting Completed with zero errors and zero warnings](../artifacts/lab-12/screenshots/09-backup-reports-completely-clean.png)
+
+![The restore Completed, the PVC Bound and the Deployment 1/1 — and the database answering: relation "orders" does not exist](../artifacts/lab-12/screenshots/10-restored-clean-and-empty.png)
+
+
 Velero backed up the Kubernetes *objects* — the PVC, the Deployment, the Service — and never touched
 the bytes inside the volume. On restore it recreated an empty PVC. Postgres found an empty data
 directory, ran `initdb`, and started cleanly. **Nothing anywhere reports a problem.**
@@ -431,13 +436,16 @@ kubectl -n velero get backup <name> \
 
 ```
 ttl        = 720h0m0s
-completed  = 2026-09-25T13:40:02Z
-expiration = 2026-10-25T13:40:01Z
+completed  = 2026-09-27T10:57:01Z
+expiration = 2026-10-27T10:57:00Z
 ```
 
 **What this means.** TTL is resolved to an **absolute expiration timestamp at creation**, not
 evaluated later. Velero's `gc-controller` removes the Backup object *and its data in object storage*
 once that moment passes.
+
+![The schedule enabled with a 72h backup TTL, and the existing backup carrying its own resolved expiration stamp](../artifacts/lab-12/screenshots/11-schedule-and-ttl-expiry.png)
+
 
 Two consequences worth stating plainly:
 
@@ -483,7 +491,7 @@ velero backup delete shop-backup --confirm
 | A backup can report `Completed` and restore nothing usable | 5 | 19/19 items, 0 errors — then `relation "orders" does not exist` |
 | Velero backs up objects, not volume bytes, unless told | 5 | PVC `Bound` and empty; Postgres ran `initdb` and started clean |
 | Only a restore-and-query verifies a backup | 5 | every status field was green while the data was gone |
-| TTL becomes an absolute expiry stamped at creation | 6 | `ttl=720h` → `expiration=2026-10-25T13:40:01Z` |
+| TTL becomes an absolute expiry stamped at creation | 6 | `ttl=720h` → `expiration=2026-10-27T10:57:00Z` |
 | Expiry deletes the backup **and its data** | 6 | gc-controller removes the object and the bucket contents |
 
 

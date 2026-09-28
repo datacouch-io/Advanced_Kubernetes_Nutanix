@@ -6,7 +6,7 @@
 
 ## What you'll learn
 
-- What changes when you go from **one cluster** (Lab 12, Flux) to **many**: you need a way to *register* clusters and *target* rollouts to groups of them.
+- What changes when you go from **one cluster** (Lab 15, Flux) to **many**: you need a way to *register* clusters and *target* rollouts to groups of them.
 - How **Rancher Fleet** registers downstream clusters to a manager and represents each one as a `Cluster` object you can label and select.
 - How a single `GitRepo` **fans out** to every matching cluster, and how **drift correction** heals a cluster that's been changed out-of-band.
 
@@ -33,11 +33,18 @@ You'll create three clusters, install Fleet on the manager, register the other t
 
 ## The idea in 60 seconds
 
-Flux (Lab 12) reconciled **one** cluster from Git. A fleet needs two more things: a way to **enroll** clusters, and a way to **target** a rollout at some of them (e.g. staging first, then prod).
+Flux (Lab 15) reconciled **one** cluster from Git. A fleet needs two more things: a way to **enroll** clusters, and a way to **target** a rollout at some of them (e.g. staging first, then prod).
 
 Fleet has a **manager** cluster running the Fleet controller. Downstream clusters run a small **agent** that registers back to the manager using a token; each registered cluster becomes a `Cluster` object you can label (`env=staging`, `env=prod`). You then create a **`GitRepo`** with `targets` that select clusters by label — one Git commit rolls out to every matching cluster. Turn on **`correctDrift`** and Fleet will re-apply anything that's changed on a downstream cluster out-of-band.
 
-![Architecture diagram](artifacts/lab-16/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    GIT["Git repo (one commit)"] --> MGR["Fleet manager<br/>GitRepo + targets by label"]
+    MGR -->|"env=staging"| STG["staging cluster<br/>(fleet-agent) → app"]
+    MGR -->|"env=prod"| PRD["prod cluster<br/>(fleet-agent) → app"]
+    STG -.->|"someone deletes the app (drift)"| DRIFT["staging ≠ Git"]
+    DRIFT -->|"correctDrift re-applies"| STG
+```
 
 ---
 
@@ -145,7 +152,7 @@ kubectl --context kind-fleet-mgr -n fleet-default get clusters.fleet.cattle.io -
 
 **What you should see:** the manager's own `local` cluster, plus two downstream `Cluster` objects (auto-named `cluster-…`) with `ENV` showing `staging` and `prod`, each `BUNDLES-READY 2/2`.
 
-![The fleet: manager 'local' plus two registered downstream clusters labelled staging and prod](artifacts/lab-16/screenshots/01-fleet-registered.png)
+![The fleet: manager 'local' plus two registered downstream clusters labelled staging and prod](../artifacts/lab-16/screenshots/01-fleet-registered.png)
 
 **What this means:** three clusters are now under one control plane, and the `env` labels give you a way to *target* rollouts at groups of them.
 
@@ -198,7 +205,7 @@ kubectl --context kind-fleet-prod -n fleet-demo get deploy podinfo
 
 **What you should see:** the `GitRepo` reports `BUNDLEDEPLOYMENTS-READY 2/2` at commit `dd507173…`, and `podinfo` is running `2/2` in the `fleet-demo` namespace on **both** clusters — from one repo, one commit.
 
-![One GitRepo at one commit; the same app running on both staging and prod](artifacts/lab-16/screenshots/02-onerepo-fanout.png)
+![One GitRepo at one commit; the same app running on both staging and prod](../artifacts/lab-16/screenshots/02-onerepo-fanout.png)
 
 **What this means:** you delivered to the whole fleet from a single source of truth. To do a **staged rollout** (roll to `staging`, verify, then `prod`), you'd add a `rolloutStrategy` or split the targets — the targeting mechanism is the same, just sequenced.
 
@@ -218,7 +225,7 @@ kubectl --context kind-fleet-stg -n fleet-demo get deploy podinfo      # -> back
 
 **What you should see:** right after the delete, `staging` reports `NotFound` while `prod` is untouched at `2/2`. Within seconds, `correctDrift` re-applies the Deployment and `staging` is back to `2/2`.
 
-![Deployment deleted on staging (prod unaffected), then auto-restored by Fleet's drift correction](artifacts/lab-16/screenshots/03-drift-corrected.png)
+![Deployment deleted on staging (prod unaffected), then auto-restored by Fleet's drift correction](../artifacts/lab-16/screenshots/03-drift-corrected.png)
 
 **What this means:** Fleet continuously reconciles *each* cluster against Git. Drift on one cluster is detected and corrected there, without touching the rest of the fleet — self-healing at fleet scale.
 
@@ -243,7 +250,7 @@ for c in fleet-mgr fleet-stg fleet-prod; do kind delete cluster --name "$c"; don
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-16/screenshots/`](artifacts/lab-16/screenshots/) (3 images), and a command transcript is in [`artifacts/lab-16/evidence/lab-13-fleet.txt`](artifacts/lab-16/evidence/lab-13-fleet.txt).
+Real screenshots for this lab are in [`artifacts/lab-16/screenshots/`](../artifacts/lab-16/screenshots/) (3 images), and a command transcript is in [`artifacts/lab-16/evidence/lab-13-fleet.txt`](../artifacts/lab-16/evidence/lab-13-fleet.txt).
 
 ---
 

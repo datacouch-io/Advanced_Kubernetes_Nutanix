@@ -36,7 +36,17 @@ A `ResourceQuota` caps a namespace hard: unused quota is wasted, and there's no 
 
 Jobs don't schedule directly. You label a Job with a **LocalQueue**; Kueue **suspends** it, decides whether quota (own + borrowable) is available, and only then **admits** it — unsuspending it so the scheduler runs its Pods.
 
-![Architecture diagram](artifacts/lab-17/diagrams/diagram.png)
+```mermaid
+flowchart TB
+    subgraph cohort["cohort: org (2 CPU total)"]
+      CQA["ClusterQueue cq-a<br/>nominal 1 CPU"]
+      CQB["ClusterQueue cq-b<br/>nominal 1 CPU"]
+    end
+    JA["team-a Job: needs 2 CPU"] --> LQA["LocalQueue (team-a)"] --> CQA
+    JB["team-b Job: needs 1 CPU"] --> LQB["LocalQueue (team-b)"] --> CQB
+    CQA -.->|"cq-b idle → borrow 1 CPU"| CQB
+    CQA --> ADM["team-a admitted:<br/>1 own + 1 borrowed"]
+```
 
 ---
 
@@ -168,7 +178,7 @@ kubectl -n team-a get workload "$WL" -o jsonpath='{.status.conditions[?(@.type==
 
 **What you should see:** `team-b`'s workload is `Admitted` in `cq-b`; `team-a`'s workload is **not** admitted and has **no Pods** (Kueue keeps the Job suspended). The reason reads: **`insufficient unused quota for cpu in flavor default-flavor, 1 more needed`** — `team-a` has its own 1 CPU but needs 1 more, and the cohort has none to lend because `team-b` is using `cq-b`.
 
-![team-b admitted; team-a blocked with 'insufficient unused quota, 1 more needed', no pods](artifacts/lab-17/screenshots/01-blocked.png)
+![team-b admitted; team-a blocked with 'insufficient unused quota, 1 more needed', no pods](../artifacts/lab-17/screenshots/01-blocked.png)
 
 **What this means:** Kueue admits **whole jobs** only when the total quota (own + borrowable) is available. Instead of letting `team-a` half-start and jam the cluster, it holds the job suspended and tells you *exactly* how much is missing.
 
@@ -188,7 +198,7 @@ kubectl -n team-a get pods
 
 **What you should see:** `cq-a` now shows **`USED_CPU 2`** with **`BORROWED 1`** — it's using its own 1 CPU plus 1 borrowed from the cohort. `team-a`'s workload is `Admitted` in `cq-a`, and its **2 Pods are Running**. You never touched the `team-a` job — Kueue admitted it the moment capacity appeared.
 
-![After freeing team-b: cq-a USED 2 / BORROWED 1, team-a admitted, 2 pods Running](artifacts/lab-17/screenshots/02-borrowed.png)
+![After freeing team-b: cq-a USED 2 / BORROWED 1, team-a admitted, 2 pods Running](../artifacts/lab-17/screenshots/02-borrowed.png)
 
 **What this means:** this is the whole point of cohorts — **guaranteed floors with elastic sharing**. Each tenant is promised its 1 CPU, but idle capacity flows to whoever needs it, so the cluster stays busy instead of sitting half-empty behind rigid quotas.
 
@@ -217,10 +227,10 @@ kubectl delete resourceflavor default-flavor --ignore-not-found
 
 ## Evidence
 
-Real screenshots for this lab are in [`artifacts/lab-17/screenshots/`](artifacts/lab-17/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-17/evidence/lab-14-kueue.txt`](artifacts/lab-17/evidence/lab-14-kueue.txt).
+Real screenshots for this lab are in [`artifacts/lab-17/screenshots/`](../artifacts/lab-17/screenshots/) (2 images), and a command transcript is in [`artifacts/lab-17/evidence/lab-14-kueue.txt`](../artifacts/lab-17/evidence/lab-14-kueue.txt).
 
 ---
 
 ---
 
-**Next:** [Lab 18 — Ask for a Device by Its Properties (Dynamic Resource Allocation for Accelerators)](lab-18-dra.docx)
+**Next:** [Lab 18 — Ask for a Device by Its Properties (Dynamic Resource Allocation for Accelerators)](../additional/further-labs/lab-18-dra.docx)
