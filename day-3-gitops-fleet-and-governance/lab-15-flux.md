@@ -2,7 +2,7 @@
 
 **Day 4 · GitOps, Multi-Cluster & Advanced Scheduling**
 
-> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Flux v2**. Every screenshot is a real capture. The payoff: you deliver an app to the cluster **without ever running `kubectl apply`** — Flux pulls it from Git — and then you *delete the live Deployment* and watch Flux **put it back**, because Git says it should exist.
+> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Flux v2**. Screenshots for Steps 1–3 are real captures from that GKE cluster; **Step 4's capture was taken on a local `kind` cluster on 2026-09-28**, with Gitea in-cluster instead of the GKE source. The failure and its message are identical. The payoff: you deliver an app to the cluster **without ever running `kubectl apply`** — Flux pulls it from Git — and then you *delete the live Deployment* and watch Flux **put it back**, because Git says it should exist.
 
 ## What you'll learn
 

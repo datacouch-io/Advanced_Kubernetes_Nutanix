@@ -1,7 +1,7 @@
 
 **Day 2 · Extending and Operating the Platform Under Pressure**
 
-> YES — **Tested end-to-end** on a **real GKE cluster** (`dcproject-462806`, the shared Day-2 cluster). Every screenshot is a real capture. The eye-opener: `kubectl delete` prints `… deleted`, yet the object is **still there** with a `deletionTimestamp` set — because a finalizer is holding it open. Deletion in Kubernetes is a two-phase handshake, not an instant remove.
+> YES — **Tested end-to-end** on a **real GKE cluster** (`dcproject-462806`, the shared Day-2 cluster). Screenshots for Steps 1–3 are real captures from that GKE cluster; **Step 4's two captures were taken on a local `kind` cluster on 2026-09-28** — see the note in that step about how kind's metrics pipeline changes one HPA condition. The eye-opener: `kubectl delete` prints `… deleted`, yet the object is **still there** with a `deletionTimestamp` set — because a finalizer is holding it open. Deletion in Kubernetes is a two-phase handshake, not an instant remove.
 
 ## What you'll learn
 

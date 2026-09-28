@@ -1,7 +1,7 @@
 
 **Day 1 · How Kubernetes Really Works**
 
-> YES — **Tested end-to-end** on a **real GKE cluster** (`dcproject-462806`, `us-central1-a`, 2× `e2-medium`, Kubernetes v1.35.7-gke). Every screenshot is a real capture. You'll seed the four `Pending` reasons that cause the vast majority of real incidents, read the exact `FailedScheduling` message for each, and fix each until the Pod runs.
+> YES — **Tested end-to-end** on a **real GKE cluster** (`dcproject-462806`, `us-central1-a`, 2× `e2-medium`, Kubernetes v1.35.7-gke). Screenshots for Steps 1–5 are real captures from that GKE cluster; **Step 6's two KWOK captures were taken on a local `kind` cluster on 2026-09-28**, because KWOK's simulated nodes are the point of that step and cost nothing to run locally. You'll seed the four `Pending` reasons that cause the vast majority of real incidents, read the exact `FailedScheduling` message for each, and fix each until the Pod runs.
 
 ## What you'll learn
 

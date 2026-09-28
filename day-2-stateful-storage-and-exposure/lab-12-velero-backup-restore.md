@@ -2,7 +2,7 @@
 
 **Day 3 · Stateful Workloads, Persistent Storage & Service Exposure**
 
-> ✅ **Tested end-to-end**, in three parts. Steps 2–4 were first verified on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) against an in-cluster MinIO bucket; every screenshot is a real capture from that run. **MinIO's public images have since been withdrawn**, so Step 1 was rewritten and re-verified on `kind` with **SeaweedFS 3.80** on 2026-09-27 (backup location `Available`, volume data backed up and restored). Steps 5–6 were verified on `kind` on 2026-09-25. The payoff is unchanged: you `kubectl delete namespace` an entire application, then bring it *all* back — Deployment, Service, and its data — with `catalog: widget-9000=42.00` intact.
+> ✅ **Tested end-to-end**, in three parts. Steps 2–4 were first verified on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) against an in-cluster MinIO bucket; every screenshot is a real capture from that run. **MinIO's public images have since been withdrawn**, so Step 1 was rewritten and re-verified on `kind` with **SeaweedFS 3.80** on 2026-09-27 (backup location `Available`, volume data backed up and restored). Steps 5–6 were verified and captured on `kind` on 2026-09-28, against a Postgres workload holding real rows. The payoff is unchanged: you `kubectl delete namespace` an entire application, then bring it *all* back — Deployment, Service, and its data — with `catalog: widget-9000=42.00` intact.
 
 ## What you'll learn
 

@@ -2,7 +2,7 @@
 
 **Day 3 · Stateful Workloads, Persistent Storage & Service Exposure**
 
-> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Loki + Promtail** collecting logs cluster-wide. Every screenshot is a real capture. The payoff: an app is quietly failing every few seconds, and instead of `kubectl logs`-ing pod after pod, you'll ask Loki **one query** and get the exact error line — `ERROR payment failed: connection refused to db:5432` — with a timestamp.
+> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Loki + Promtail** collecting logs cluster-wide. Screenshots for Step 1 and Step 3 are real captures from that GKE cluster; **the captures in Steps 2, 4, 5 and 6 were taken on a local `kind` cluster on 2026-09-28** with the same Loki 3.3.2 and Promtail charts. Every command and result is identical. The payoff: an app is quietly failing every few seconds, and instead of `kubectl logs`-ing pod after pod, you'll ask Loki **one query** and get the exact error line — `ERROR payment failed: connection refused to db:5432` — with a timestamp.
 
 ## What you'll learn
 

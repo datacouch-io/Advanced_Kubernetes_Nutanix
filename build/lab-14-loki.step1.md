@@ -2,7 +2,7 @@
 
 **Day 3 · Stateful Workloads, Persistent Storage & Service Exposure**
 
-> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Loki + Promtail** collecting logs cluster-wide. Every screenshot is a real capture. The payoff: an app is quietly failing every few seconds, and instead of `kubectl logs`-ing pod after pod, you'll ask Loki **one query** and get the exact error line — `ERROR payment failed: connection refused to db:5432` — with a timestamp.
+> ✅ **Tested end-to-end** on a **real GKE cluster** (`advk8s-lab`, `dcproject-462806`) with **Loki + Promtail** collecting logs cluster-wide. Screenshots for Step 1 and Step 3 are real captures from that GKE cluster; **the captures in Steps 2, 4, 5 and 6 were taken on a local `kind` cluster on 2026-09-28** with the same Loki 3.3.2 and Promtail charts. Every command and result is identical. The payoff: an app is quietly failing every few seconds, and instead of `kubectl logs`-ing pod after pod, you'll ask Loki **one query** and get the exact error line — `ERROR payment failed: connection refused to db:5432` — with a timestamp.
 
 ## What you'll learn
 
@@ -41,14 +41,7 @@ You'll install Loki and Promtail, deploy a `payments` app that logs a recurring 
 - a **line filter** — `|= "ERROR"` — keeps only matching lines,
 - an aggregation — `count_over_time(... [5m])` — measures the rate.
 
-```mermaid
-flowchart TB
-    P1["pod stdout<br/>(node 1)"] --> PT1["Promtail<br/>(DaemonSet)"]
-    P2["pod stdout<br/>(node 2)"] --> PT2["Promtail<br/>(DaemonSet)"]
-    PT1 -->|"lines + labels"| LOKI["Loki<br/>(indexes by label)"]
-    PT2 -->|"lines + labels"| LOKI
-    LOKI -->|"LogQL:<br/>{namespace=&quot;shop2&quot;} |= &quot;ERROR&quot;"| YOU["you — the exact<br/>failing line + timestamp"]
-```
+![Architecture diagram](artifacts/lab-14/diagrams/diagram.png)
 
 ---
 
