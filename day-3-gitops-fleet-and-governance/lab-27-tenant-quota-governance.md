@@ -93,6 +93,50 @@ kubectl -n flux-system create secret generic gitea-auth \
 
 Commit a namespace and a quota to `tenants/team-a/`:
 
+# 1. Port-forward Gitea to localhost so your local git client can talk to it
+kubectl -n git-server port-forward svc/gitea 3000:3000 &
+PF_PID=$!
+sleep 2
+
+# 2. Clone the empty 'tenants' repo created in Step 1
+git clone http://labadmin:labpass123@localhost:3000/labadmin/tenants.git
+cd tenants
+
+# 3. Create the directory and write namespace.yaml
+mkdir -p team-a
+cat <<'EOF' > team-a/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels: { tenant: team-a }
+EOF
+
+# 4. Write quota.yaml
+cat <<'EOF' > team-a/quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata: { name: team-a-quota, namespace: team-a }
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+    count/deployments.apps: "5"
+EOF
+
+# 5. Commit and push to main
+git config user.name "labadmin"
+git config user.email "lab@example.com"
+git add team-a/
+git commit -m "Add team-a namespace and quota"
+git push origin main
+
+# Return to your working root directory
+cd ..
+
+
 ```yaml
 # tenants/team-a/namespace.yaml
 apiVersion: v1
@@ -206,6 +250,27 @@ Once a ResourceQuota covers `cpu` or `memory`, **every Pod in that namespace mus
 
 ## Step 4 — Ship the LimitRange, the same way
 
+cd tenants
+
+# Write limits.yaml
+cat <<'EOF' > team-a/limits.yaml
+apiVersion: v1
+kind: LimitRange
+metadata: { name: team-a-defaults, namespace: team-a }
+spec:
+  limits:
+    - type: Container
+      defaultRequest: { cpu: 100m, memory: 128Mi }
+      default:        { cpu: 500m, memory: 512Mi }
+      max:            { cpu: "1",  memory: 1Gi }
+EOF
+
+# Commit and push
+git add team-a/limits.yaml
+git commit -m "Add LimitRange defaults for team-a"
+git push origin main
+
+cd ..
 **Goal:** fix it through Git, not through `kubectl`.
 
 Commit alongside the quota:
